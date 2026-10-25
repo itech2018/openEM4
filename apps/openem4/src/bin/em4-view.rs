@@ -406,7 +406,7 @@ impl Viewer {
    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
    let candidate=relevance(&indices);
    let weakest=self.resident_enhancements.iter().map(|r|relevance(&r.indices)).fold(f32::INFINITY,f32::min);
-   if candidate<=weakest*1.25 {continue;}
+   if weakest.is_finite() && candidate<=weakest*1.25 {continue;}
    let (triangles,original_job)=&self.restore_jobs[id];
    self.pending_enhancements.push((*triangles,original_job.clone()));
    self.enhancement_total+=1;
