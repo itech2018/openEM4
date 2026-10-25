@@ -66,7 +66,7 @@ fn depth(device:&wgpu::Device,w:u32,h:u32)->Depth {
 }
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
- pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,bool)>,
+ pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
@@ -128,7 +128,11 @@ impl Viewer {
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
-   let transparent=pixels.chunks_exact(4).any(|pixel|pixel[3]<250);
+   let alpha:Vec<u8>=pixels.chunks_exact(4).map(|pixel|pixel[3]).collect();
+   let has_alpha=alpha.iter().any(|&a|a<250);
+   let binary_alpha=alpha.iter().all(|&a|a<24||a>231);
+   let material_kind=if !has_alpha{0u8}else if binary_alpha{1u8}else{2u8};
+   println!("Material {} {}: {} ({}x{})",i,surface.name,match material_kind{0=>"opaque",1=>"cutout",_=>"blended"},w,h);
    let levels = 32 - w.max(h).leading_zeros();
    let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O material"),
     size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:levels,sample_count:1,
@@ -148,28 +152,34 @@ impl Viewer {
    let group=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("V3O surface bind"),layout:&material_layout,
     entries:&[wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
      wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
-   draws.push((ranges[i].clone(),group,transparent));
+   let mut center=[0.0f32;3];let mut count=0f32;
+   for t in mesh.triangles.iter().filter(|t|t.surface_index==i){
+    for &v in &t.indices {let p=vertices[v as usize].pos;for axis in 0..3{center[axis]+=p[axis];}count+=1.0;}
+   }
+   if count>0.0 {for x in &mut center{*x/=count;}}
+   draws.push((ranges[i].clone(),group,material_kind,center));
   }
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
    label:None,bind_group_layouts:&[&layout,&material_layout],push_constant_ranges:&[]});
-  let make_pipeline=|transparent:bool|device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
-   label:Some(if transparent{"V3O transparent pipeline"}else{"V3O opaque pipeline"}),
+  let make_pipeline=|mode:u8|device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
+   label:Some(if mode==2{"V3O transparent pipeline"}else if mode==1{"V3O cutout pipeline"}else{"V3O opaque pipeline"}),
    layout:Some(&pipeline_layout),
    vertex:wgpu::VertexState{module:&shader,entry_point:"vs_main",buffers:&[Vertex::desc()],compilation_options:Default::default()},
    fragment:Some(wgpu::FragmentState{module:&shader,entry_point:"fs_main",
-    targets:&[Some(wgpu::ColorTargetState{format,blend:if transparent{Some(wgpu::BlendState::ALPHA_BLENDING)}else{None},
+    targets:&[Some(wgpu::ColorTargetState{format,blend:if mode==2{Some(wgpu::BlendState::ALPHA_BLENDING)}else{None},
      write_mask:wgpu::ColorWrites::ALL})],
     compilation_options:Default::default()}),
    primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
    depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth24Plus,
-    depth_write_enabled:!transparent,depth_compare:wgpu::CompareFunction::Less,
+    depth_write_enabled:mode!=2,depth_compare:wgpu::CompareFunction::Less,
     stencil:Default::default(),bias:Default::default()}),
    multisample:Default::default(),multiview:None
   });
-  let pipeline=make_pipeline(false);
-  let transparent_pipeline=make_pipeline(true);
+  let pipeline=make_pipeline(0);
+  let cutout_pipeline=make_pipeline(1);
+  let transparent_pipeline=make_pipeline(2);
   let vertex_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX});
   let index_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
@@ -200,7 +210,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&ground_view)},
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
-  Ok(Self{surface,device,queue,config,pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
+  Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
    index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true})
  }
  fn resize(&mut self,w:u32,h:u32){
@@ -230,18 +240,29 @@ impl Viewer {
     pass.draw_indexed(0..6,0,0..1);
    }
    pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
-   // Opaque surfaces first; transparent surfaces preserve the existing depth buffer.
+   // Stable opaque/cutout passes; blended batches sorted back-to-front each frame.
    pass.set_pipeline(&self.pipeline);
-   for (range,material,is_transparent) in &self.draws {
-    if *is_transparent {continue;}
-    pass.set_bind_group(1,material,&[]);
-    pass.draw_indexed(range.clone(),0,0..1);
+   for (range,material,kind,_) in &self.draws {
+    if *kind!=0 {continue;}
+    pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
+   pass.set_pipeline(&self.cutout_pipeline);
+   for (range,material,kind,_) in &self.draws {
+    if *kind!=1 {continue;}
+    pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
+   }
+   let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
+   let eye=[self.camera.target[0]+self.camera.distance*cp*sy,self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
+   let mut blended:Vec<usize>=self.draws.iter().enumerate().filter(|(_,d)|d.2==2).map(|(i,_)|i).collect();
+   blended.sort_by(|&a,&b|{
+    let da=dot(sub(self.draws[a].3,eye),sub(self.draws[a].3,eye));
+    let db=dot(sub(self.draws[b].3,eye),sub(self.draws[b].3,eye));
+    db.total_cmp(&da)
+   });
    pass.set_pipeline(&self.transparent_pipeline);
-   for (range,material,is_transparent) in &self.draws {
-    if !*is_transparent {continue;}
-    pass.set_bind_group(1,material,&[]);
-    pass.draw_indexed(range.clone(),0,0..1);
+   for i in blended {
+    let (range,material,_,_)=&self.draws[i];
+    pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
