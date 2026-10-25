@@ -169,7 +169,7 @@ impl Viewer {
  }
  fn render(&mut self)->Result<(),wgpu::SurfaceError>{
   let matrix=self.camera.matrix(self.config.width as f32/self.config.height as f32);
-  self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix,debug:[u32::from(self.wireframe),0,0,0]}));
+  self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix,debug:[u32::from(self.debug_normals),0,0,0]}));
   let frame=self.surface.get_current_texture()?;
   let view=frame.texture.create_view(&Default::default());
   let mut encoder=self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label:Some("V3O frame")});
