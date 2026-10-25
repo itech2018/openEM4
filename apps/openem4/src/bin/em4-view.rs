@@ -145,7 +145,9 @@ impl Viewer {
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
-   let (w,h,pixels)=texture_upscale::upscale(w,h,pixels,upscale_factor);
+   let (w,h,pixels)=if upscale_factor==0 {(w,h,pixels)}
+    else if upscale_factor==4 {texture_upscale::upscale(w,h,pixels,4)}
+    else {texture_upscale::enhance_auto(&surface.texture,w,h,pixels)};
    let alpha:Vec<u8>=pixels.chunks_exact(4).map(|pixel|pixel[3]).collect();
    let (min_alpha,max_alpha)=alpha.iter().fold((255u8,0u8),|(lo,hi),&a|(lo.min(a),hi.max(a)));
    let has_alpha=alpha.iter().any(|&a|a<250);
@@ -681,8 +683,9 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
- let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
- println!("Texture upscaling: {}",if upscale_factor==4{"4x Lanczos3 + 25% sharpening + external cache"}else{"disabled"});
+ let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=off"){0}
+ else if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
+ println!("Texture enhancement: {}",match upscale_factor{0=>"disabled (original textures)",4=>"forced 4x Lanczos3 + sharpen25",_=>"automatic (conservative 2x/4x + external cache)"});
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
  }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone(),Vec::new())};
