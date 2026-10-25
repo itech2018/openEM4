@@ -494,6 +494,30 @@ impl Viewer {
    if result.w==0||result.h==0 {return false;}
    if let Some(pending)=self.restore_pending.get_mut(result.job_id){*pending=false;}
    let required=estimated_mip_bytes(result.w,result.h);
+   // Reject lower-value upgrades before displacing more visible resident textures.
+   // This avoids budget thrashing when many textures finish concurrently.
+   if required>self.enhancement_gpu_budget.saturating_sub(self.enhancement_gpu_used)
+      && !self.resident_enhancements.is_empty() {
+    let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
+    let eye=[self.camera.target[0]+self.camera.distance*cp*sy,
+     self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
+    let forward=normalize(sub(self.camera.target,eye));
+    let importance=|indices:&[usize]|->f32{
+     indices.iter().filter_map(|&i|self.draws.get(i)).map(|draw|{
+      let toward=sub(draw.3,eye);
+      (0.1+0.9*dot(normalize(toward),forward).max(0.0))/dot(toward,toward).sqrt().max(1.0)
+     }).fold(0.0_f32,f32::max)
+    };
+    let request_indices=result.indices.lock().map(|v|v.clone()).unwrap_or_default();
+    let candidate=importance(&request_indices);
+    let weakest=self.resident_enhancements.iter().map(|r|importance(&r.indices)).fold(f32::INFINITY,f32::min);
+    if candidate<=weakest*1.25 {
+     println!("Enhanced texture deferred: existing GPU residents have higher camera priority");
+     if let Some(p)=self.restore_pending.get_mut(result.job_id){*p=true;}
+     if let Some(at)=self.restore_eligible_at.get_mut(result.job_id){*at=Instant::now()+std::time::Duration::from_secs(5);}
+     return false;
+    }
+   }
    if !self.reclaim_enhancement_memory(required){
     eprintln!("Enhanced texture exceeds GPU budget ({} MiB), retaining original",required/1048576);
     return false;
