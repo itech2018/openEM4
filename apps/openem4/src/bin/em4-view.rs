@@ -81,7 +81,7 @@ struct Viewer {
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
- light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,
+ light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  lights:LightControls,started:Instant,
 }
 impl Viewer {
@@ -198,6 +198,7 @@ impl Viewer {
   let mut mv:Vec<Vertex>=Vec::new();let mut mi:Vec<u32>=Vec::new();
   let mut light_markers=Vec::new();
   let mut corona_anchors=Vec::new();
+  let mut corona_materials=Vec::new();
   for light in light_defs {
    let tex=light.corona_texture.to_ascii_lowercase();
    let kind:u8=if tex.contains("blue"){1}else if tex.contains("red"){0}
@@ -214,6 +215,36 @@ impl Viewer {
    }
    mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
    light_markers.push((first..first+6,kind,light.flash_frequency,light.flash_offset));
+   // Resolve legacy corona TGA by basename under the source game's Data folder.
+   // Fallback to an in-memory radial alpha mask if the original cannot be read.
+   let loaded=find_corona_file(model_path,&light.corona_texture)
+    .and_then(|file|image::open(&file).ok().map(|im|(file,im.to_rgba8())));
+   let rgba=if let Some((file,img))=loaded {
+    println!("Loaded original E4P corona: {}",file.display());img
+   } else {
+    eprintln!("Corona texture missing/unsupported: {} (procedural fallback)",light.corona_texture);
+    image::RgbaImage::from_fn(64,64,|x,y|{
+     let dx=(x as f32-31.5)/31.5;let dy=(y as f32-31.5)/31.5;
+     let a=(1.0-(dx*dx+dy*dy).sqrt()).max(0.0).powf(1.6);
+     image::Rgba([255,255,255,(a*255.0) as u8])
+    })
+   };
+   let (tw,th)=rgba.dimensions();
+   let tex=device.create_texture(&wgpu::TextureDescriptor{
+    label:Some("original E4P corona"),size:wgpu::Extent3d{width:tw,height:th,depth_or_array_layers:1},
+    mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+    format:wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]
+   });
+   queue.write_texture(wgpu::ImageCopyTexture{texture:&tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
+    rgba.as_raw(),wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(tw*4),rows_per_image:Some(th)},
+    wgpu::Extent3d{width:tw,height:th,depth_or_array_layers:1});
+   let tex_view=tex.create_view(&Default::default());
+   corona_materials.push(device.create_bind_group(&wgpu::BindGroupDescriptor{
+    label:Some("E4P corona material"),layout:&material_layout,entries:&[
+     wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&tex_view)},
+     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]
+   }));
    corona_anchors.push((p,size,kind));
   }
   println!("Loaded {} original E4P light definitions",light_markers.len());
@@ -264,7 +295,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,light_markers,corona_anchors,lights:LightControls::default(),started:Instant::now()})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now()})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -337,14 +368,14 @@ impl Viewer {
    pass.set_bind_group(1,&self.ground_material,&[]);
    pass.set_vertex_buffer(0,self.marker_vertex.slice(..));
    pass.set_index_buffer(self.marker_index.slice(..),wgpu::IndexFormat::Uint32);
-   for (range,kind,frequency,offset) in &self.light_markers {
+   for (index,(range,kind,frequency,offset)) in self.light_markers.iter().enumerate() {
     let pulse=*frequency<=0.0 || ((t*frequency+offset).fract()<0.5);
     let enabled=match kind {
      0|1=>self.lights.beacon||self.lights.brake,
      2=>self.lights.headlights,
      _=>self.lights.left||self.lights.right
     };
-    if enabled&&pulse {pass.draw_indexed(range.clone(),0,0..1);}
+    if enabled&&pulse {pass.set_bind_group(1,&self.corona_materials[index],&[]);pass.draw_indexed(range.clone(),0,0..1);}
    }
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
@@ -364,6 +395,26 @@ impl Viewer {
   }
   self.cursor=Some((x,y));
  }
+}
+
+// A bounded, case-insensitive search for original Emergency 4 corona textures.
+fn find_corona_file(model_path:&Path,name:&str)->Option<std::path::PathBuf>{
+ if name.is_empty()||name.contains(".."){return None}
+ let file_name=Path::new(name.replace('\\',"/").as_str()).file_name()?.to_string_lossy().to_string();
+ let data=model_path.ancestors().find(|p|p.file_name().is_some_and(|s|s.to_string_lossy().eq_ignore_ascii_case("Data")))?;
+ let mut stack=vec![(data.to_path_buf(),0usize)];
+ let mut visited=0usize;
+ while let Some((dir,depth))=stack.pop(){
+  visited+=1;if visited>12000 {break}
+  let Ok(entries)=fs::read_dir(&dir)else{continue};
+  for e in entries.flatten(){
+   let Ok(ft)=e.file_type()else{continue};
+   if ft.is_symlink(){continue;}
+   if ft.is_file()&&e.file_name().to_string_lossy().eq_ignore_ascii_case(&file_name){return Some(e.path());}
+   if depth<8&&ft.is_dir(){stack.push((e.path(),depth+1));}
+  }
+ }
+ None
 }
 
 fn load_surface_image(model_path:&Path,filename:&str)->(u32,u32,Vec<u8>){
