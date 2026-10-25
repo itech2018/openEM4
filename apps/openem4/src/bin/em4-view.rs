@@ -280,7 +280,7 @@ impl Viewer {
    let mut vertices=Vec::with_capacity(self.corona_anchors.len()*4);
    for (center,size,kind) in &self.corona_anchors {
     for (u,v) in [(0.0f32,0.0f32),(1.0,0.0),(1.0,1.0),(0.0,1.0)] {
-     let x=(u-0.5)*2.0*size;let y=(v-0.5)*2.0*size;
+     let x=(u-0.5)*2.0*(*size);let y=(v-0.5)*2.0*(*size);
      let pos=[center[0]+right[0]*x+up[0]*y,center[1]+right[1]*x+up[1]*y,center[2]+right[2]*x+up[2]*y];
      vertices.push(Vertex{pos,normal:[0.0,0.0,1.0],uv:[*kind as f32*2.0+u,v]});
     }
