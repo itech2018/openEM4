@@ -129,10 +129,11 @@ impl Viewer {
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
    let alpha:Vec<u8>=pixels.chunks_exact(4).map(|pixel|pixel[3]).collect();
+   let (min_alpha,max_alpha)=alpha.iter().fold((255u8,0u8),|(lo,hi),&a|(lo.min(a),hi.max(a)));
    let has_alpha=alpha.iter().any(|&a|a<250);
    let binary_alpha=alpha.iter().all(|&a|a<24||a>231);
    let material_kind=if !has_alpha{0u8}else if binary_alpha{1u8}else{2u8};
-   println!("Material {} {}: {} ({}x{})",i,surface.name,match material_kind{0=>"opaque",1=>"cutout",_=>"blended"},w,h);
+   println!("Material {} {} texture={} mode={} size={}x{} alpha={}..{}",i,surface.name,surface.texture,match material_kind{0=>"opaque",1=>"cutout",_=>"blended"},w,h,min_alpha,max_alpha);
    let levels = 32 - w.max(h).leading_zeros();
    let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O material"),
     size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:levels,sample_count:1,
