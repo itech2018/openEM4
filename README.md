@@ -129,3 +129,7 @@ Each surface classification is printed at startup to help diagnose wheels or win
 **Test:** `cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Data\\Prototypes\\Vehicles\\TEC\\asf.e4p"`
 
 This update has not been independently compiled or visually validated.
+
+## Lighting and material diagnostics
+
+Vehicle materials now use a directional key light, subtle opposite-side fill and hemispherical ambient illumination. The viewer also logs per-surface texture path, dimensions, material class and minimum/maximum alpha values. Use those logs to diagnose missing wheel textures or unexpectedly transparent materials. This change does not modify original DDS assets. It is not physically based rendering, and original Emergency 4 material flags still require decoding. Build and appearance must be verified locally.
