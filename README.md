@@ -165,3 +165,7 @@ The ASF binary E4P stores a separate `offset` vector (UTF-16 string such as `163
 ## Camera-facing, scaled corona previews
 
 The E4P light preview now uses each decoded `offset` anchor with the corresponding `coronasize` (bounded for safety), rather than a fixed-size square. Preview coronas rotate to face the camera and use a soft radial alpha gradient and alpha blending. The existing E4P flash frequency/offset logic and E/H/B/L/K controls remain. This is **procedural corona rendering**, not yet sampling the game's actual `coronatex` TGA texture. Real corona texture loading, light-type mapping, correct per-light orientation and bloom remain future work. Original Emergency 4 files are never modified.
+
+## Original Emergency 4 corona texture sampling
+
+The viewer now looks up each E4P `coronatex` file (including legacy `.tga` files) under the original game's `Data` directory, decodes it with the Image TGA loader, and binds a separate alpha-blended sprite material for each light. Coronas retain their decoded E4P `offset`, `coronasize`, flash frequency and flash offset, and face the camera. Missing/unsupported textures use an in-memory soft radial fallback and report a warning. The original files are never altered. Light category controls remain heuristic, real bloom and precise EM4 light-type semantics are not implemented, and the game Data tree lookup is presently bounded but may be slow on large mod installations. The changes have not been independently compiled or visually tested.
