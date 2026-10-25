@@ -657,7 +657,7 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
        else{fallback_pivot};
      let axis=if use_native{native_axis.unwrap()}else{[0.,1.,0.]};
      let angle=if use_native{child.open_angle.unwrap().to_radians()}
-       else{direction*65.0f32.to_radians()};
+       else{-direction*65.0f32.to_radians()};
      let native=use_native;
      println!("Door {}: pivot {:?} axis {:?} angle {:.1} source {} lateral_span {:.2} body_half_width {:.2}",
        child.prototype,pivot,axis,angle.to_degrees(),
