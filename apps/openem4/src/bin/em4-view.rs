@@ -75,7 +75,7 @@ impl LightControls {
  }
 }
 #[derive(Clone)]
-struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String }
+struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String,axis:[f32;3],angle:f32,native:bool }
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
@@ -322,7 +322,7 @@ impl Viewer {
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
   for (i,d) in self.doors.iter().enumerate(){
    println!("Door {} {}: pivot {:?}, swing {}, animation {:.0}%",
-    i+1,d.prototype,d.pivot,d.direction,self.door_progress[i]*100.0);
+    i+1,d.prototype,d.pivot,d.angle.to_degrees(),self.door_progress[i]*100.0);
   }
  }
  fn toggle_doors(&mut self){
@@ -352,13 +352,18 @@ impl Viewer {
    let mut verts=self.closed_vertices.clone();
    for (i,door) in self.doors.iter().enumerate(){
     let t=self.door_progress[i];let eased=t*t*(3.0-2.0*t);
-    let (sn,cs)=(door.direction*65.0f32.to_radians()*eased).sin_cos();
+    let (sn,cs)=(door.angle*eased).sin_cos();
+    let axis=door.axis;
     for v in &mut verts[door.range.clone()]{
-     let x=v.pos[0]-door.pivot[0];let z=v.pos[2]-door.pivot[2];
-     v.pos[0]=door.pivot[0]+cs*x-sn*z;
-     v.pos[2]=door.pivot[2]+sn*x+cs*z;
-     let nx=v.normal[0];let nz=v.normal[2];
-     v.normal[0]=cs*nx-sn*nz;v.normal[2]=sn*nx+cs*nz;
+     let p=sub(v.pos,door.pivot);
+     let rotated=[
+      p[0]*cs+cross(axis,p)[0]*sn+axis[0]*dot(axis,p)*(1.0-cs),
+      p[1]*cs+cross(axis,p)[1]*sn+axis[1]*dot(axis,p)*(1.0-cs),
+      p[2]*cs+cross(axis,p)[2]*sn+axis[2]*dot(axis,p)*(1.0-cs)
+     ];
+     for k in 0..3 {v.pos[k]=door.pivot[k]+rotated[k];}
+     let n=v.normal;let c=cross(axis,n);let d=dot(axis,n);
+     for k in 0..3 {v.normal[k]=n[k]*cs+c[k]*sn+axis[k]*d*(1.0-cs);}
     }
    }
    self.queue.write_buffer(&self.vertices,0,bytemuck::cast_slice(&verts));
@@ -632,7 +637,12 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      let pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
      println!("Door {} hinge preview: pivot {:?}, direction {}, vertex range {}..{}",
        child.prototype,pivot,direction,start,mesh.vertices.len());
-     doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot,direction,prototype:child.prototype.clone()});
+     let native=child.door_axis.is_some()&&child.open_angle.is_some();
+     let axis=child.door_axis.map(|a|[a[0],a[2],-a[1]]).unwrap_or([0.,1.,0.]);
+     let angle=child.open_angle.map(|a|a.to_radians()).unwrap_or(direction*65.0f32.to_radians());
+     println!("Door animation {}: axis {:?}, angle {:.1} degrees, source {}",
+      child.prototype,axis,angle.to_degrees(),if native{"E4P"}else{"geometry fallback"});
+     doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot,direction,prototype:child.prototype.clone(),axis,angle,native});
     }
     loaded+=1;
    },
