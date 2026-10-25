@@ -78,8 +78,8 @@ impl LightControls {
 }
 #[derive(Clone)]
 struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String,axis:[f32;3],angle:f32,native:bool }
-struct EnhancedTexture { index:usize,w:u32,h:u32,pixels:Vec<u8> }
-struct EnhancementJob {index:usize,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
+struct EnhancedTexture { indices:Vec<usize>,w:u32,h:u32,pixels:Vec<u8> }
+struct EnhancementJob {indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
 fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,w:u32,h:u32,pixels:Vec<u8>)->Result<wgpu::BindGroup,String>{
  let levels=32-w.max(h).leading_zeros();
  let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O texture"),
@@ -175,22 +175,34 @@ impl Viewer {
     let job={let Ok(receiver)=jobs.lock()else{return};receiver.recv()};
     let Ok(job)=job else{return};
     let (w,h,pixels)=texture_upscale::upscale(job.w,job.h,job.pixels,job.scale);
-    if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{index:job.index,w,h,pixels});}
-    else{let _=complete.send(EnhancedTexture{index:job.index,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
+    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
+    if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{indices,w,h,pixels});}
+    else{let _=complete.send(EnhancedTexture{indices,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
    });
   }
   let mut enhancement_total=0usize;
+  let mut duplicate_count=0usize;
+  let mut pending_keys=std::collections::HashMap::<blake3::Hash,std::sync::Arc<std::sync::Mutex<Vec<usize>>>>::new();
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
    if upscale_factor!=0{
     let scale=if upscale_factor==4{4}else{texture_upscale::automatic_factor(&surface.texture,w,h,&pixels)};
     if scale>1 {
-     enhancement_total+=1;
-     let job=EnhancementJob{index:i,name:surface.texture.clone(),w,h,pixels:pixels.clone(),scale};
-     // Bounded queue: when busy, use the original texture rather than blocking
-     // loading or spawning unbounded threads.
-     if job_tx.try_send(job).is_err(){enhancement_total-=1;eprintln!("Enhancement queue full; keeping original {}",surface.texture);}
+     let mut hasher=blake3::Hasher::new();
+     hasher.update(b"openem4-enhancement-job-v1");
+     hasher.update(&w.to_le_bytes());hasher.update(&h.to_le_bytes());
+     hasher.update(&scale.to_le_bytes());hasher.update(&pixels);
+     let key=hasher.finalize();
+     if let Some(indices)=pending_keys.get(&key){
+      if let Ok(mut group)=indices.lock(){group.push(i);duplicate_count+=1;}
+     }else{
+      let indices=std::sync::Arc::new(std::sync::Mutex::new(vec![i]));
+      let job=EnhancementJob{indices:indices.clone(),name:surface.texture.clone(),w,h,pixels:pixels.clone(),scale};
+      // A saturated queue must never delay rendering the original model.
+      if job_tx.try_send(job).is_ok(){enhancement_total+=1;pending_keys.insert(key,indices);}
+      else{eprintln!("Enhancement queue full; keeping original {}",surface.texture);}
+     }
 
     }
    }
@@ -210,7 +222,7 @@ impl Viewer {
   }
   drop(job_tx);
   drop(enhance_tx);
-  println!("Enhancement jobs queued: {}",enhancement_total);
+  println!("Enhancement jobs queued: {} ({} duplicate surface requests joined)",enhancement_total,duplicate_count);
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
@@ -366,12 +378,15 @@ impl Viewer {
   // Budget uploads to one texture per event loop iteration.
   if let Ok(result)=self.enhancements.try_recv(){
    self.enhancement_done+=1;
-   if result.w==0||result.h==0{return false;}
+   if result.w==0||result.h==0 {return false;}
    if let Ok(new_group)=material_group(&self.device,&self.queue,&self.material_layout,&self.material_sampler,result.w,result.h,result.pixels){
-    if let Some(draw)=self.draws.get_mut(result.index){
-     draw.1=new_group;changed=true;
-     println!("Enhanced texture ready {}/{}",self.enhancement_done,self.enhancement_total);
+    let mut count=0;
+    for index in result.indices {
+     if let Some(draw)=self.draws.get_mut(index){
+      draw.1=new_group.clone();changed=true;count+=1;
+     }
     }
+    println!("Enhanced texture ready {}/{} ({} surface bindings)",self.enhancement_done,self.enhancement_total,count);
    }
   }
   changed
