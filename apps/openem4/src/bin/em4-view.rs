@@ -627,9 +627,9 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      let vehicle_middle_x=0.0f32;
      let front_door=center_x>=vehicle_middle_x;
      let pivot_x=if front_door{max[0]}else{min[0]};
-     let pivot_y=door_side;
      let direction=if door_side>=0.0{1.0}else{-1.0};
-     let pivot=[pivot_x,pivot_y,(min[2]+max[2])*0.5];
+     // Mesh bounds above are EM4 Z-up; convert hinge to viewer Y-up.
+     let pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
      println!("Door {} hinge preview: pivot {:?}, direction {}, vertex range {}..{}",
        child.prototype,pivot,direction,start,mesh.vertices.len());
      doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot,direction,prototype:child.prototype.clone()});
