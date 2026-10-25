@@ -75,7 +75,7 @@ impl LightControls {
  }
 }
 #[derive(Clone)]
-struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3] }
+struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String }
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
@@ -318,6 +318,13 @@ impl Viewer {
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
    draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
+ fn debug_hinges(&self){
+  println!("=== E4P door hinge preview (heuristic, Y-up) ===");
+  for (i,d) in self.doors.iter().enumerate(){
+   println!("Door {} {}: pivot {:?}, swing {}, animation {:.0}%",
+    i+1,d.prototype,d.pivot,d.direction,self.door_progress[i]*100.0);
+  }
+ }
  fn toggle_doors(&mut self){
   if self.doors.is_empty(){println!("No E4P child doors found");return;}
   let indices:Vec<usize>=match self.selected_door{Some(i) if i<self.doors.len()=>vec![i],_=> (0..self.doors.len()).collect()};
@@ -345,7 +352,7 @@ impl Viewer {
    let mut verts=self.closed_vertices.clone();
    for (i,door) in self.doors.iter().enumerate(){
     let t=self.door_progress[i];let eased=t*t*(3.0-2.0*t);
-    let (sn,cs)=(65.0f32.to_radians()*eased).sin_cos();
+    let (sn,cs)=(door.direction*65.0f32.to_radians()*eased).sin_cos();
     for v in &mut verts[door.range.clone()]{
      let x=v.pos[0]-door.pivot[0];let z=v.pos[2]-door.pivot[2];
      v.pos[0]=door.pivot[0]+cs*x-sn*z;
@@ -605,7 +612,27 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
     let start=mesh.vertices.len();
     append_model(&mut mesh,part,Some(child),transpose_rotation);
     if child.category=="door" {
-     doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot:[child.position[0],child.position[2],-child.position[1]]});
+     // Infer a vertical hinge from the closed door's world-space bounds, NOT
+     // from the child attachment origin (which is not necessarily the hinge).
+     let verts=&mesh.vertices[start..];
+     let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
+     for v in verts {for axis in 0..3{
+      min[axis]=min[axis].min(v.position[axis]);max[axis]=max[axis].max(v.position[axis]);
+     }}
+     if verts.is_empty(){continue;}
+     let center_x=(min[0]+max[0])*0.5;
+     let door_side=(min[1]+max[1])*0.5;
+     // Emergency 4 vehicles conventionally face +X. Front doors hinge
+     // toward +X, rear doors toward -X; this remains a heuristic.
+     let vehicle_middle_x=0.0f32;
+     let front_door=center_x>=vehicle_middle_x;
+     let pivot_x=if front_door{max[0]}else{min[0]};
+     let pivot_y=door_side;
+     let direction=if door_side>=0.0{1.0}else{-1.0};
+     let pivot=[pivot_x,pivot_y,(min[2]+max[2])*0.5];
+     println!("Door {} hinge preview: pivot {:?}, direction {}, vertex range {}..{}",
+       child.prototype,pivot,direction,start,mesh.vertices.len());
+     doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot,direction,prototype:child.prototype.clone()});
     }
     loaded+=1;
    },
@@ -684,6 +711,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
        PhysicalKey::Code(KeyCode::Digit7)=>viewer.select_door(7),
        PhysicalKey::Code(KeyCode::Digit8)=>viewer.select_door(8),
        PhysicalKey::Code(KeyCode::Digit9)=>viewer.select_door(9),
+       PhysicalKey::Code(KeyCode::KeyJ)=>viewer.debug_hinges(),
        PhysicalKey::Code(KeyCode::KeyD)=>{viewer.toggle_doors();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyO)=>{viewer.corona_occlusion=!viewer.corona_occlusion;println!("Corona depth occlusion: {}",viewer.corona_occlusion);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyE)=>{viewer.lights.beacon=!viewer.lights.beacon;println!("Beacon: {}",viewer.lights.beacon);window.request_redraw();},
