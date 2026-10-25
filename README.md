@@ -110,3 +110,9 @@ The original ASF E4P wheel positions use offsets approximately X=+98/+96 for one
 The V3O viewer now builds a complete CPU mipmap pyramid from decoded vehicle textures and enables trilinear filtering. These mipmaps are in GPU memory only; original game DDS files are never changed. Future automatic 2×/4× texture enhancement (including optional AI super-resolution) is in `docs/ROADMAP.md` and **is not yet implemented**.
 
 Rebuild and open the usual `asf.e4p` with `em4-view` to compare distant body/wheel texture aliasing.
+
+## Opaque and transparent material passes
+
+The model viewer now classifies a material as transparent when any decoded texture pixel has alpha below 250. It renders fully opaque surfaces first with depth writes, then draws transparent surfaces with alpha blending and depth writes disabled. This is an initial material heuristic, **not** a verified EM4 surface-mode implementation. Transparency is not yet distance-sorted, and cutout geometry may require alpha-test treatment; visually incorrect windows or wheels should be reported.
+
+**Confirmed future texture enhancement:** 4× spatial upscaling, optional/off switch, and a derived-texture cache outside Emergency 4's installation. The original textures will remain unchanged. The enhancement pipeline and cache are planned, not yet implemented.
