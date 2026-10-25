@@ -81,10 +81,11 @@ struct Viewer {
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
+ light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,
  lights:LightControls,started:Instant,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path)->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light])->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
@@ -193,24 +194,29 @@ impl Viewer {
   let pipeline=make_pipeline(0);
   let cutout_pipeline=make_pipeline(1);
   let transparent_pipeline=make_pipeline(2);
-  // Preview markers approximated from model bounds, NOT decoded EM4 lights.
+  // Original E4P point records; no guessed bounds-based positions.
   let mut mv:Vec<Vertex>=Vec::new();let mut mi:Vec<u32>=Vec::new();
-  let radius=(diagonal*0.018).max(0.06);
-  let cx=(min[0]+max[0])*0.5;let cz=(min[2]+max[2])*0.5;
-  let side=(max[2]-min[2])*0.3;
-  let front=max[0]-(max[0]-min[0])*0.09;let rear=min[0]+(max[0]-min[0])*0.09;
-  let y=min[1]+(max[1]-min[1])*0.38;
-  let mut add=|x:f32,y:f32,z:f32,color:f32|{
-   let b=mv.len() as u32;
+  let mut light_markers=Vec::new();
+  let radius=(diagonal*0.014).max(0.04);
+  for light in light_defs {
+   let tex=light.corona_texture.to_ascii_lowercase();
+   let kind:u8=if tex.contains("blue"){1}else if tex.contains("red"){0}
+    else if tex.contains("yellow"){3}else{2};
+   let id=match kind{0=>0.1,1=>0.3,2=>0.5,_=>0.8};
+   // Convert native EM4 Z-up positions to the viewer's Y-up basis.
+   let p=[light.position[0],light.position[2],-light.position[1]];
+   let start=mi.len() as u32;
+   let base=mv.len() as u32;
    for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
-    mv.push(Vertex{pos:[x+dx*radius,y,z+dz*radius],normal:[0.0,1.0,0.0],uv:[color,0.0]});
+    mv.push(Vertex{pos:[p[0]+dx*radius,p[1],p[2]+dz*radius],
+     normal:[0.0,1.0,0.0],uv:[id,0.0]});
    }
-   mi.extend_from_slice(&[b,b+1,b+2,b,b+2,b+3]);
-  };
-  add(cx,max[1]+radius,cz-side,0.1);add(cx,max[1]+radius,cz+side,0.3);
-  add(front,y,cz-side,0.5);add(front,y,cz+side,0.5);
-  add(rear,y,cz-side,0.1);add(rear,y,cz+side,0.1);
-  add(front,y+radius,cz-side,0.8);add(front,y+radius,cz+side,0.8);
+   mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
+   light_markers.push((start..start+6,kind,light.flash_frequency,light.flash_offset));
+  }
+  println!("Loaded {} original E4P light definitions",light_markers.len());
+  // GPU buffers require non-empty data even when the prototype has no lights.
+  if mv.is_empty() {mv.push(Vertex{pos:[0.;3],normal:[0.,1.,0.],uv:[0.,0.]});mi.push(0);}
   let marker_vertex=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("preview light verts"),contents:bytemuck::cast_slice(&mv),usage:wgpu::BufferUsages::VERTEX});
   let marker_index=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
@@ -256,7 +262,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,lights:LightControls::default(),started:Instant::now()})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,light_markers,lights:LightControls::default(),started:Instant::now()})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -309,18 +315,21 @@ impl Viewer {
     let (range,material,_,_)=&self.draws[i];
     pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
-   // Temporary unlit marker geometry: location is based on model bounds.
+   // Data-driven diagnostic markers: position, colour and pulse from source E4P.
    let t=self.started.elapsed().as_secs_f32();
-   let turn=(t*1.5).fract()<0.5;let emergency=(t*3.0).fract()<0.5;
    pass.set_pipeline(&self.marker_pipeline);
    pass.set_bind_group(1,&self.ground_material,&[]);
    pass.set_vertex_buffer(0,self.marker_vertex.slice(..));
    pass.set_index_buffer(self.marker_index.slice(..),wgpu::IndexFormat::Uint32);
-   if self.lights.beacon {if emergency {pass.draw_indexed(0..6,0,0..1);}else{pass.draw_indexed(6..12,0,0..1);}}
-   if self.lights.headlights {pass.draw_indexed(12..24,0,0..1);}
-   if self.lights.brake {pass.draw_indexed(24..36,0,0..1);}
-   if self.lights.left&&turn {pass.draw_indexed(36..42,0,0..1);}
-   if self.lights.right&&turn {pass.draw_indexed(42..48,0,0..1);}
+   for (range,kind,frequency,offset) in &self.light_markers {
+    let pulse=*frequency<=0.0 || ((t*frequency+offset).fract()<0.5);
+    let enabled=match kind {
+     0|1=>self.lights.beacon||self.lights.brake,
+     2=>self.lights.headlights,
+     _=>self.lights.left||self.lights.right
+    };
+    if enabled&&pulse {pass.draw_indexed(range.clone(),0,0..1);}
+   }
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
@@ -466,7 +475,11 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
   .with_inner_size(winit::dpi::LogicalSize::new(1200.0,800.0)).build(&event_loop)?);
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path))?;
+ let light_defs=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+ em4_formats::e4p_lights::parse(&fs::read(&path)?)
+}else{Vec::new()};
+ for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: pos={:?} corona={} type={} frequency={} offset={}",l.position,l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
