@@ -16,3 +16,5 @@ serde_json = "1"
 em4-formats = { path = "../../crates/em4-formats" }
 image = { version = "0.25", default-features = false, features = ["png", "tga"] }
 bytemuck = { version = "1", features = ["derive"] }
+
+blake3 = "1"
