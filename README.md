@@ -191,3 +191,7 @@ cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapp
 ```
 
 Relative `mod:` model and child-prototype references resolve against the selected mod root first, and fall back to the base `Data` directory when missing. Corona TGA lookup searches both, preferring the mod override. This fixes the previous fatal `E4P must be within an Emergency 4 Data directory` error. Some mods may use unsupported reference syntaxes or formats; the change has not been independently compiled on Windows.
+
+## Mod vehicle material compatibility
+
+The V3O/E4P viewer now resolves texture references relative to the source V3O first, and supports `mod:` texture paths via the selected mod's root followed by the base-game `Data` fallback. This also applies to vehicle child models (wheels and doors), whose texture paths can be absolute after E4P assembly. Missing textures remain visible as checkerboard fallback and report the missing reference in the console. Unused `Depth.texture` and `Viewer.index_count` warnings have been addressed; the depth texture is still retained for GPU resource lifetime. The changes are source-level and need verification with London Mod assets.
