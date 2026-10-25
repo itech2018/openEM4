@@ -4,6 +4,7 @@
 pub mod dds;
 pub mod v3o_text;
 pub mod v3o_packed;
+pub mod v3o_mesh;
 use serde::Serialize;
 use std::{fs, io, path::Path};
 
