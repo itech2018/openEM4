@@ -37,6 +37,46 @@ pub fn repeated_v3o(mut mesh:Mesh,count:usize)->Result<Mesh,String>{
  }
  Ok(mesh)
 }
+/// Merge heterogeneous V3O meshes into one preview scene. Each instance has its
+/// own surfaces, ensuring original per-model texture paths can be resolved.
+/// The renderer's content-addressed registry still shares matching GPU textures.
+pub fn combine_v3o(models:Vec<Mesh>)->Result<Mesh,String>{
+ if models.is_empty()||models.len()>16{return Err("scene must contain 1..=16 models".into());}
+ let mut out=Mesh{version:"1.43".into(),vertices:Vec::new(),triangles:Vec::new(),surfaces:Vec::new()};
+ // Place models in a row, adjusting for each model's bounds.
+ let mut cursor=0.0f32;
+ for model in models {
+  if model.vertices.is_empty(){return Err("scene contains empty mesh".into());}
+  let min_x=model.vertices.iter().map(|v|v.position[0]).fold(f32::INFINITY,f32::min);
+  let max_x=model.vertices.iter().map(|v|v.position[0]).fold(f32::NEG_INFINITY,f32::max);
+  let min_y=model.vertices.iter().map(|v|v.position[1]).fold(f32::INFINITY,f32::min);
+  let max_y=model.vertices.iter().map(|v|v.position[1]).fold(f32::NEG_INFINITY,f32::max);
+  let base=u32::try_from(out.vertices.len()).map_err(|_|"vertex offset overflow")?;
+  let surface_base=out.surfaces.len();
+  if out.vertices.len().saturating_add(model.vertices.len())>2_000_000
+   ||out.triangles.len().saturating_add(model.triangles.len())>2_000_000
+   ||surface_base.saturating_add(model.surfaces.len())>1024{
+   return Err("scene geometry or surface limit exceeded".into());
+  }
+  for mut vertex in model.vertices{
+   vertex.position[0]+=cursor-min_x;
+   vertex.position[1]-=(min_y+max_y)*0.5;
+   out.vertices.push(vertex);
+  }
+  for triangle in model.triangles{
+   let mut indices=[0;3];
+   for (dst,src) in indices.iter_mut().zip(triangle.indices){
+    *dst=src.checked_add(base).ok_or("triangle index overflow")?;
+   }
+   let surface_index=triangle.surface_index.checked_add(surface_base).ok_or("surface index overflow")?;
+   if surface_index>=surface_base+model.surfaces.len(){return Err("invalid scene surface index".into());}
+   out.triangles.push(Triangle{indices,surface_index});
+  }
+  out.surfaces.extend(model.surfaces);
+  cursor+=(max_x-min_x).max(max_y-min_y).max(1.0)*1.3;
+ }
+ Ok(out)
+}
 #[cfg(test)]
 mod tests {
  use super::*;
