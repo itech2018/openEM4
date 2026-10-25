@@ -33,11 +33,12 @@ pub fn parse(bytes:&[u8])->Vec<Light>{
   let mut light=Light{points:Vec::new(),position:[0.;3],corona_texture:String::new(),
    flash_frequency:0.,flash_offset:0.,corona_size:0.,light_type:0,color:0xffffffff};
   let mut pos=[None,None,None];
-  let mut cursor=end+8;let limit=(cursor+5000).min(bytes.len());
+  let mut cursor=end+8;let limit=(cursor+2048).min(bytes.len());
   while cursor+12<limit {
    let Some((key,kend))=field(bytes,cursor)else{cursor+=1;continue};
    if key=="light" && u32_at(bytes,kend)==Some(2){break}
-   if key=="Filename"||key=="Child"||key=="Wheels"{break}
+   // Do not drift into another top-level section when encountering unrelated records.
+   if matches!(key.as_str(),"Filename"|"Child"|"Wheels"|"Doors"|"ModelName"|"VehicleWheel"|"VirtualObject"|"SuperStruct"|"Lights"){break}
    let Some((typ,next))=value(bytes,kend)else{cursor+=1;continue};
    if typ==2 {
     if let Some(bits)=u32_at(bytes,kend+4) {
@@ -62,6 +63,7 @@ pub fn parse(bytes:&[u8])->Vec<Light>{
    for p in &light.points{for i in 0..3{light.position[i]+=p[i]/n;}}
    out.push(light);
   }
+  // Resume at the next boundary candidate, never from the beginning of this record.
   at=cursor.max(at+1);
  }
  out
