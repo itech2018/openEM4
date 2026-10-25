@@ -4,6 +4,8 @@
 mod texture_upscale;
 #[path = "../material_registry.rs"]
 mod material_registry;
+#[path = "../scene_mesh.rs"]
+mod scene_mesh;
 use std::{env, fs, mem, path::Path, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -899,9 +901,15 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   if let Err(e)=texture_upscale::prune_cache(){eprintln!("Texture cache pruning skipped: {e}");}
  }
  println!("Texture enhancement: {}",match upscale_factor{0=>"disabled (original textures)",4=>"forced 4x Lanczos3 + sharpen25",_=>"automatic (conservative 2x/4x + external cache)"});
+ let instance_count=env::args().find_map(|arg|arg.strip_prefix("--instances=").and_then(|n|n.parse::<usize>().ok())).unwrap_or(1);
+ if !(1..=16).contains(&instance_count){return Err("--instances must be between 1 and 16".into());}
+ if instance_count>1&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
+  return Err("--instances currently supports standalone V3O meshes only, to preserve E4P attachment animations".into());
+ }
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
- }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone(),Vec::new())};
+ }else{(scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new())};
+ println!("Scene instances: {} (shared material surfaces)",instance_count);
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
