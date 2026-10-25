@@ -17,5 +17,11 @@ Version milestones are goals and not fixed release commitments.
 
 - **Now:** CPU-generated mipmaps and trilinear texture filtering in the V3O viewer; improve distant texture stability without modifying source DDS.
 - **Next rendering pass:** classify opaque, cutout and blended materials from verified E4P/V3O evidence; render opaque before transparent, handle depth writes and sorting; inspect blue wheel material against the source DDS.
-- **Confirmed default future enhancement:** 4× **spatial** texture upscaling (user-selectable Off / 2× / 4×). Preserve original assets byte-for-byte. Cache generated textures outside game directories, keyed by source-content hash, scaler version and settings; keep alpha and edges intact. Cache can be deleted safely, enforce disk/VRAM budgets and use unenhanced textures during processing. Spatial enhancement is preferred; optional AI methods are out of scope for this milestone.
+- **Implemented opt-in enhancement:** 4× Lanczos3 spatial texture resizing with 25% RGB-only unsharp masking, non-destructive external versioned cache keyed by original decoded texture data and processing settings. Original assets remain unchanged. Disabled by default and subject to decoded texture limits. Additional quality modes and user-adjustable sharpening are future work.
 - **Constraints:** original assets stay untouched, no copyrighted enhanced textures redistributed, cache size and VRAM budgets enforced, asynchronous background generation does not block game simulation, reproducible fallbacks when a texture cannot be enhanced.
+
+## Rendering upscalers — preferences
+
+- **Preferred/current rendering:** native display resolution, with no frame upscaling or temporal reconstruction enabled by default.
+- **Future options:** AMD FSR, NVIDIA DLSS and Intel XeSS as optional native renderer integrations after motion vectors, depth, history/jitter and compatible platform backends exist. No cloud AI API or per-frame paid API dependency.
+- **Keep separate:** original-asset DDS texture processing is independent of finished-frame resolution upscaling.
