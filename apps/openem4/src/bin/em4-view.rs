@@ -528,7 +528,7 @@ impl Viewer {
    pass.set_pipeline(&self.cutout_pipeline);
    for (range,material,kind,_) in &self.draws {
     if *kind!=1 {continue;}
-    pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
+    pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
    let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
    let eye=[self.camera.target[0]+self.camera.distance*cp*sy,self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
@@ -541,7 +541,7 @@ impl Viewer {
    pass.set_pipeline(&self.transparent_pipeline);
    for i in blended {
     let (range,material,_,_)=&self.draws[i];
-    pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
+    pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
    // Data-driven diagnostic markers: position, colour and pulse from source E4P.
    let t=self.started.elapsed().as_secs_f32();
