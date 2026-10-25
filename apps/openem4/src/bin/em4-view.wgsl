@@ -16,6 +16,9 @@ struct VOut { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<
   return vec4<f32>(normalize(v.normal) * 0.5 + vec3<f32>(0.5), 1.0);
  }
  let texel = textureSample(color_texture, color_sampler, v.uv);
- let lighting = 0.42 + 0.58 * abs(dot(normalize(v.normal + vec3<f32>(0.001)), normalize(vec3<f32>(0.3,0.8,0.6))));
+ let n = normalize(v.normal + vec3<f32>(0.00001, 0.00001, 0.00001));
+ let light_dir = normalize(vec3<f32>(0.4,0.85,0.45));
+ let diffuse = max(dot(n, light_dir), 0.0);
+ let lighting = 0.58 + 0.42 * diffuse;
  return vec4<f32>(texel.rgb * lighting, texel.a);
 }
