@@ -27,3 +27,6 @@ Use `cargo run -p openem4 --bin em4-v3o-mesh -- "C:\\path\\model.V3O"`.
 The verified uploaded `asf.V3O` uses `D` rows for vertices, `P` rows for polygons, `SRF` rows for surfaces, and 1-based vertex and surface indices. Its record headers report 1360 vertices, 792 triangles and 2 surfaces.
 The parser validates record counts and indices, converts coordinates to provisional metres (integer / 100), normals (integer / 256) and UVs (integer / 1024). These scales need visual confirmation on varied models. Packed original game files are unpacked in memory automatically; no game assets are checked into Git.
 **Not yet included:** GPU model display, final materials, nontriangular faces, animated meshes and production format coverage.
+
+## Binary E4P sample (ASF recovery vehicle)
+Actual `asf.e4p` (29,228 bytes) contains length-prefixed UTF-16LE strings, rather than the V3O zlib container. The `em4-e4p-inspect` tool now extracts candidate model paths and wheel/door child E4P paths from binary strings. This is not full binary parsing: transforms, vehicle properties and hierarchy semantics still need research. No original E4P file is committed.
