@@ -1,6 +1,6 @@
 //! Standalone prototype 3D V3O viewer. Geometry is shaded without textures.
 //! Left mouse: orbit; right mouse: pan; wheel: zoom; R: reset.
-use std::{env, fs, mem, sync::Arc};
+use std::{env, fs, mem, path::Path, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::{
  event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
@@ -71,7 +71,7 @@ struct Viewer {
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh)->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   let vertices:Vec<Vertex>=mesh.vertices.iter().map(|v|{
@@ -81,7 +81,13 @@ impl Viewer {
   let target=[(min[0]+max[0])*0.5,(min[1]+max[1])*0.5,(min[2]+max[2])*0.5];
   let diagonal=((max[0]-min[0]).powi(2)+(max[1]-min[1]).powi(2)+(max[2]-min[2]).powi(2)).sqrt();
   let camera=Camera::reset(target,(diagonal*1.5).max(2.0));
-  let indices:Vec<u32>=mesh.triangles.iter().flat_map(|t|t.indices).collect();
+  let mut indices:Vec<u32>=Vec::with_capacity(mesh.triangles.len()*3);
+  let mut ranges=Vec::new();
+  for surface in 0..mesh.surfaces.len(){
+   let start=indices.len() as u32;
+   for t in mesh.triangles.iter().filter(|t|t.surface_index==surface){indices.extend_from_slice(&t.indices);}
+   ranges.push(start..indices.len() as u32);
+  }
   let instance=wgpu::Instance::default();
   let surface=instance.create_surface(window.clone()).map_err(|e|e.to_string())?;
   let adapter=instance.request_adapter(&wgpu::RequestAdapterOptions{
@@ -106,15 +112,40 @@ impl Viewer {
    }]});
   let bind=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("camera bind"),
    layout:&layout,entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]});
+  let material_layout=device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+   label:Some("V3O material layout"),entries:&[
+    wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::FRAGMENT,
+     ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+    wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::FRAGMENT,
+     ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
+   ]});
+  let sampler=device.create_sampler(&wgpu::SamplerDescriptor{address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
+   mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,..Default::default()});
+  let mut draws=Vec::new();
+  for (i,surface) in mesh.surfaces.iter().enumerate(){
+   let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
+   let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O material"),
+    size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:1,sample_count:1,
+    dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
+   queue.write_texture(wgpu::ImageCopyTexture{texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
+    &pixels,wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(w*4),rows_per_image:Some(h)},
+    wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1});
+   let view=texture.create_view(&Default::default());
+   let group=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("V3O surface bind"),layout:&material_layout,
+    entries:&[wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
+     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
+   draws.push((ranges[i].clone(),group));
+  }
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
-   label:None,bind_group_layouts:&[&layout],push_constant_ranges:&[]});
+   label:None,bind_group_layouts:&[&layout,&material_layout],push_constant_ranges:&[]});
   let pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
    label:Some("V3O model pipeline"),layout:Some(&pipeline_layout),
    vertex:wgpu::VertexState{module:&shader,entry_point:"vs_main",buffers:&[Vertex::desc()],compilation_options:Default::default()},
    fragment:Some(wgpu::FragmentState{module:&shader,entry_point:"fs_main",
-    targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})],
+    targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})],
     compilation_options:Default::default()}),
    primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
    depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth24Plus,
@@ -127,7 +158,7 @@ impl Viewer {
    label:Some("V3O triangles"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -149,7 +180,7 @@ impl Viewer {
      stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None});
    pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);
    pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
-   pass.draw_indexed(0..self.index_count,0,0..1);
+   for (range,material) in &self.draws {pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);}
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
@@ -169,6 +200,30 @@ impl Viewer {
   self.cursor=Some((x,y));
  }
 }
+
+fn load_surface_image(model_path:&Path,filename:&str)->(u32,u32,Vec<u8>){
+ let fallback=|| (2,2,vec![220,220,220,255,120,120,120,255,120,120,120,255,220,220,220,255]);
+ if filename.is_empty()||filename.contains("..")||Path::new(filename).is_absolute(){return fallback();}
+ let base=match model_path.parent(){Some(p)=>p,None=>return fallback()};
+ let requested=filename.replace('\\',"/");
+ let mut folder=base.to_path_buf();
+ for component in requested.split('/'){
+  if component.is_empty()||component=="."{continue;}
+  let entry=match std::fs::read_dir(&folder).ok().and_then(|entries|entries.flatten().find(|e|e.file_name().to_string_lossy().eq_ignore_ascii_case(component))){
+   Some(e)=>e,None=>{eprintln!("Missing texture: {filename}");return fallback();}
+  };
+  folder=entry.path();
+ }
+ let bytes=match fs::read(&folder){Ok(b)=>b,Err(e)=>{eprintln!("Texture read failed {filename}: {e}");return fallback();}};
+ let decoded=if filename.to_ascii_lowercase().ends_with(".dds"){
+  em4_formats::dds::decode_dds(&bytes).map(|im|(im.width,im.height,im.pixels)).map_err(|e|e.to_string())
+ }else{
+  image::load_from_memory(&bytes).map(|im|{let rgba=im.to_rgba8();(rgba.width(),rgba.height(),rgba.into_raw())}).map_err(|e|e.to_string())
+ };
+ match decoded {Ok(result)=>{println!("Loaded texture: {filename}");result},
+  Err(e)=>{eprintln!("Texture unsupported {filename}: {e}");fallback()}}
+}
+
 fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
@@ -178,7 +233,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
   .with_inner_size(winit::dpi::LogicalSize::new(1200.0,800.0)).build(&event_loop)?);
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&path))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::WindowEvent{window_id,event}=event {
