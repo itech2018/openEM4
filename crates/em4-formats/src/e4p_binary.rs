@@ -47,8 +47,8 @@ pub fn inspect(bytes:&[u8])->io::Result<BinaryPrototype>{
   prototype_paths:prototypes.into_iter().collect(),
   model_paths:models.into_iter().collect(),child_prototype_paths:children.into_iter().collect(),
   strings_found:strings.len(),
-  section_names:sections.iter().filter(|x|strings.contains(*x)).map(|s|(*s).into()).collect(),
-  command_names:commands.iter().filter(|x|strings.contains(*x)).map(|s|(*s).into()).collect(),
+  section_names:sections.iter().filter(|x|strings.contains::<str>(*x)).map(|s|(*s).into()).collect(),
+  command_names:commands.iter().filter(|x|strings.contains::<str>(*x)).map(|s|(*s).into()).collect(),
  })
 }
 #[cfg(test)]
