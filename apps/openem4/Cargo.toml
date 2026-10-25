@@ -1,0 +1,15 @@
+[package]
+name = "openem4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+em4-render = { path = "../../crates/em4-render" }
+em4-vfs = { path = "../../crates/em4-vfs" }
+winit = "0.29"
+wgpu = "0.20"
+pollster = "0.3"
+env_logger = "0.11"
+log = "0.4"
+serde_json = "1"

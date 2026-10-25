@@ -1,0 +1,22 @@
+# openEM4
+
+Independent modern 64-bit Rust/wgpu engine project targeting compatibility with Emergency 4 / 911: First Responders content and community mods.
+
+**Status:** v0.1.0-dev foundation. This is not yet a playable Emergency 4 replacement. No original copyrighted game files are included.
+
+## Build
+
+Install stable Rust from rustup.rs, then:
+
+```sh
+cargo run -p openem4 -- --help
+cargo run -p openem4
+cargo run -p openem4 -- --scan "C:\Games\Emergency 4" --headless
+cargo test --workspace
+```
+
+Running the app displays a GPU diagnostic grid. The `--scan` option prints JSON inventory and discovered Mods folders; it does not modify original files.
+
+See [architecture](docs/ARCHITECTURE.md), [compatibility](docs/COMPATIBILITY.md) and [roadmap](docs/ROADMAP.md).
+
+MIT licensed, independent and unofficial. Don't redistribute proprietary game content.
