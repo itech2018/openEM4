@@ -229,3 +229,9 @@ cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapp
 ```
 
 The changes have not been independently compiled in the development environment.
+
+## 4× Lanczos3 and 25% sharpening (October 2026)
+
+Use `--texture-upscale=4` in the V3O/E4P viewer for 4× Lanczos3 enlargement followed by a mild 25% RGB unsharp mask. Alpha is resized but **not sharpened**. This replaces the earlier Catmull–Rom result that softened vehicle lettering and liveries. The resulting PNG cache is versioned separately as `%LOCALAPPDATA%\\openEM4\\textures\\lanczos3-sharp25-v2` on Windows (or under the Linux cache directory); older `spatial-v1` cache files will **not** be reused. Original DDS/TGA assets are never overwritten. The default remains original-size textures, and the chosen framebuffer rendering mode is **native resolution**, not DLSS/FSR/XeSS. Those rendering upscalers are future options, distinct from asset-texture upscaling. The amount is presently fixed at 25%, not a runtime slider. Compare the same camera framing with and without the flag before assessing texture clarity.
+
+Verification: `cargo test -p openem4 --bin em4-view`, then launch your Astra prototype with and without `--texture-upscale=4`. Compilation and image results have not yet been independently verified.
