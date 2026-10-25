@@ -34,7 +34,7 @@ pub fn texture_references(bytes: &[u8]) -> io::Result<Vec<String>> {
 pub fn inspect_file(path:&Path)->io::Result<Vec<String>> {
     let meta=fs::metadata(path)?;
     if meta.len()>16*1024*1024 {return Err(io::Error::new(io::ErrorKind::InvalidData,"V3O text too large"));}
-    texture_references(&fs::read(path)?)
+    texture_references(&crate::v3o_packed::unpack(&fs::read(path)?)?)
 }
 #[cfg(test)]
 mod tests {
