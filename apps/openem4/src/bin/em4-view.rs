@@ -83,6 +83,7 @@ fn estimated_mip_bytes(w:u32,h:u32)->u64{
  loop {bytes=bytes.saturating_add(w.saturating_mul(h).saturating_mul(4));if w==1&&h==1{break;}w=(w/2).max(1);h=(h/2).max(1);}
  bytes
 }
+struct ResidentEnhancement {indices:Vec<usize>,bytes:u64}
 struct EnhancedTexture { indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,w:u32,h:u32,pixels:Vec<u8> }
 struct EnhancementJob {indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
 fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,w:u32,h:u32,pixels:Vec<u8>)->Result<wgpu::BindGroup,String>{
@@ -114,7 +115,7 @@ struct Viewer {
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
- material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,
+ material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -372,8 +373,9 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&ground_view)},
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
+  let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -412,6 +414,34 @@ impl Viewer {
    }
   }
  }
+ fn reclaim_enhancement_memory(&mut self,required:u64)->bool{
+  if required>self.enhancement_gpu_budget{return false;}
+  let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
+  let eye=[self.camera.target[0]+self.camera.distance*cp*sy,
+   self.camera.target[1]+self.camera.distance*sp,
+   self.camera.target[2]+self.camera.distance*cp*cy];
+  let forward=normalize(sub(self.camera.target,eye));
+  while required>self.enhancement_gpu_budget.saturating_sub(self.enhancement_gpu_used){
+   if self.resident_enhancements.is_empty(){return false;}
+   let score=|item:&ResidentEnhancement|->f32{
+    item.indices.iter().filter_map(|&i|self.draws.get(i)).map(|draw|{
+     let v=sub(draw.3,eye);let dist=dot(v,v).sqrt().max(1.0);
+     (0.1+0.9*dot(normalize(v),forward).max(0.0))/dist
+    }).fold(0.0_f32,f32::max)
+   };
+   let victim=(0..self.resident_enhancements.len()).min_by(|&a,&b|
+    score(&self.resident_enhancements[a]).total_cmp(&score(&self.resident_enhancements[b]))).unwrap();
+   let old=self.resident_enhancements.swap_remove(victim);
+   for i in old.indices{
+    if let (Some(draw),Some(original))=(self.draws.get_mut(i),self.original_materials.get(i)){
+     draw.1=original.clone();
+    }
+   }
+   self.enhancement_gpu_used=self.enhancement_gpu_used.saturating_sub(old.bytes);
+   println!("Texture residency eviction: freed ~{} KiB",old.bytes/1024);
+  }
+  true
+ }
  fn receive_enhancements(&mut self)->bool{
   let mut changed=false;
   // Budget uploads to one texture per event loop iteration.
@@ -420,21 +450,20 @@ impl Viewer {
    self.enhancement_inflight=self.enhancement_inflight.saturating_sub(1);
    if result.w==0||result.h==0 {return false;}
    let required=estimated_mip_bytes(result.w,result.h);
-   if required>self.enhancement_gpu_budget.saturating_sub(self.enhancement_gpu_used){
-    eprintln!("Enhanced texture skipped: GPU upgrade budget {}/{} MiB used; requested {} MiB",
-     self.enhancement_gpu_used/1048576,self.enhancement_gpu_budget/1048576,required/1048576);
+   if !self.reclaim_enhancement_memory(required){
+    eprintln!("Enhanced texture exceeds GPU budget ({} MiB), retaining original",required/1048576);
     return false;
    }
    if let Ok(new_group)=material_group(&self.device,&self.queue,&self.material_layout,&self.material_sampler,result.w,result.h,result.pixels){
     let new_group=Arc::new(new_group);
     let mut count=0;
     let indices=result.indices.lock().map(|v|v.clone()).unwrap_or_default();
-    for index in indices {
+    for &index in &indices {
      if let Some(draw)=self.draws.get_mut(index){
       draw.1=new_group.clone();changed=true;count+=1;
      }
     }
-    if count>0{self.enhancement_gpu_used=self.enhancement_gpu_used.saturating_add(required);}
+    if count>0{self.enhancement_gpu_used=self.enhancement_gpu_used.saturating_add(required);self.resident_enhancements.push(ResidentEnhancement{indices,bytes:required});}
     println!("Enhanced texture ready {}/{} ({} surface bindings, upgraded GPU usage ~{} MiB)",self.enhancement_done,self.enhancement_total,count,self.enhancement_gpu_used/1048576);
    }
   }
