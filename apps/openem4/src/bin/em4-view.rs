@@ -631,7 +631,8 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      // toward +X, rear doors toward -X; this remains a heuristic.
      let vehicle_middle_x=0.0f32;
      let front_door=center_x>=vehicle_middle_x;
-     let pivot_x=if front_door{max[0]}else{min[0]};
+     let is_horizontal=child.door_axis.is_some_and(|a|a[2].abs()<0.5); 
+     let pivot_x=if is_horizontal {if center_x<0.0{max[0]}else{min[0]}}else if front_door{max[0]}else{min[0]};
      let direction=if door_side>=0.0{1.0}else{-1.0};
      // Mesh bounds above are EM4 Z-up; convert hinge to viewer Y-up.
      let pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
