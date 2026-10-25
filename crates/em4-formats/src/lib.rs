@@ -2,6 +2,7 @@
 //! This module does NOT yet decode packed V3O geometry or E4P prototypes.
 
 pub mod dds;
+pub mod e4p;
 pub mod v3o_text;
 pub mod v3o_packed;
 pub mod v3o_mesh;
