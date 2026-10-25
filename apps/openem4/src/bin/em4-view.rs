@@ -1,5 +1,7 @@
 //! Standalone prototype 3D V3O viewer. Geometry is shaded without textures.
 //! Left mouse: orbit; right mouse: pan; wheel: zoom; R: reset.
+#[path = "texture_upscale.rs"]
+mod texture_upscale;
 use std::{env, fs, mem, path::Path, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -87,7 +89,7 @@ struct Viewer {
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>)->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
@@ -143,6 +145,7 @@ impl Viewer {
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
+   let (w,h,pixels)=texture_upscale::upscale(w,h,pixels,upscale_factor);
    let alpha:Vec<u8>=pixels.chunks_exact(4).map(|pixel|pixel[3]).collect();
    let (min_alpha,max_alpha)=alpha.iter().fold((255u8,0u8),|(lo,hi),&a|(lo.min(a),hi.max(a)));
    let has_alpha=alpha.iter().any(|&a|a<250);
@@ -678,6 +681,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
+ let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
+ println!("Texture upscaling: {}",if upscale_factor==4{"4x spatial + external cache"}else{"disabled"});
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
  }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone(),Vec::new())};
@@ -689,7 +694,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  em4_formats::e4p_lights::parse(&fs::read(&path)?)
 }else{Vec::new()};
  for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
