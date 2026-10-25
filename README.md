@@ -173,3 +173,7 @@ The viewer now looks up each E4P `coronatex` file (including legacy `.tga` files
 ## Corona visibility regression fix
 
 After original TGA support was introduced, emergency-light sprites could disappear because some legacy images have unusable alpha channels or light quads fail the depth test. The viewer now recovers alpha from RGB brightness **only** when the decoded alpha is uniform, applies an additional soft radial falloff, and renders light billboards without depth rejection so source-defined offsets remain visible. This is a deliberate temporary preview trade-off: a light may appear through solid vehicle geometry. Proper occlusion will require source-specific light semantics. Console logs report original TGA loads or procedural fallbacks. This commit does **not** yet include accurate original flash-pattern interpretation, bloom, or a persistent on-disk corona cache. Original data remains unchanged.
+
+## Corona depth comparison and texture lookup reuse
+
+Press **O** in `em4-view` to toggle corona depth occlusion. Default remains **off**, matching the previously visible emergency light previews. With occlusion on, light sprites depth-test against the truck and may disappear if an E4P offset is inside geometry; turn it off to diagnose. Original `coronatex` filename lookups are now reused per prototype by case-insensitive texture name to avoid repeatedly scanning the Data tree for the same file. This is an in-process lookup cache, **not** the future persistent upscaled texture cache. Full EM4 flash patterns, lighting types and bloom remain pending.
