@@ -177,3 +177,7 @@ After original TGA support was introduced, emergency-light sprites could disappe
 ## Corona depth comparison and texture lookup reuse
 
 Press **O** in `em4-view` to toggle corona depth occlusion. Default remains **off**, matching the previously visible emergency light previews. With occlusion on, light sprites depth-test against the truck and may disappear if an E4P offset is inside geometry; turn it off to diagnose. Original `coronatex` filename lookups are now reused per prototype by case-insensitive texture name to avoid repeatedly scanning the Data tree for the same file. This is an in-process lookup cache, **not** the future persistent upscaled texture cache. Full EM4 flash patterns, lighting types and bloom remain pending.
+
+## Per-light E4P flash phase — initial behaviour pass
+
+Each light now evaluates its own recorded `flashfreq` and `flashoffs`, using a reusable, tested flash-phase helper. Red/blue corona lights are controlled by the emergency beacon key `E`; the `B` brake key no longer wrongly activates all red emergency beacons. Headlights and amber indicators retain their preview controls. The visual flash interpretation is still **provisional**: the original E4P light-type enum and flash frequency units are not yet fully verified, and categorisation still uses corona filenames. A follow-up pass must decode explicit light types, duration/duty cycle, vehicle-specific groups, and indicator left/right membership without guessing from colours. The update has not yet been independently compiled on Windows.
