@@ -593,6 +593,10 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
  let body=prototype.body_model.ok_or("E4P does not contain a readable body ModelName")?;
  let body_path=resolve_game_ref(&root,&body).ok_or("Main V3O model reference cannot be located in Data")?;
  let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(&body_path)?)?;
+ let body_side_min=mesh.vertices.iter().map(|v|v.position[1]).fold(f32::INFINITY,f32::min);
+ let body_side_max=mesh.vertices.iter().map(|v|v.position[1]).fold(f32::NEG_INFINITY,f32::max);
+ let body_mid_side=(body_side_min+body_side_max)*0.5;
+ let body_half_width=(body_side_max-body_side_min)*0.5;
  let mut loaded=0usize;
  let mut doors=Vec::new();
  for child in &prototype.attachments {
@@ -631,18 +635,29 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      // toward +X, rear doors toward -X; this remains a heuristic.
      let vehicle_middle_x=0.0f32;
      let front_door=center_x>=vehicle_middle_x;
-     let is_horizontal=child.door_axis.is_some_and(|a|a[2].abs()<0.5); 
-     let pivot_x=if is_horizontal {if center_x<0.0{max[0]}else{min[0]}}else if front_door{max[0]}else{min[0]};
-     let direction=if door_side>=0.0{1.0}else{-1.0};
-     // Mesh bounds above are EM4 Z-up; convert hinge to viewer Y-up.
-     let pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
-     println!("Door {} hinge preview: pivot {:?}, direction {}, vertex range {}..{}",
-       child.prototype,pivot,direction,start,mesh.vertices.len());
-     let native=child.door_axis.is_some()&&child.open_angle.is_some();
-     let axis=child.door_axis.map(|a|[a[0],a[2],-a[1]]).unwrap_or([0.,1.,0.]);
-     let angle=child.open_angle.map(|a|a.to_radians()).unwrap_or(direction*65.0f32.to_radians());
-     println!("Door animation {}: axis {:?}, angle {:.1} degrees, source {}",
-      child.prototype,axis,angle.to_degrees(),if native{"E4P"}else{"geometry fallback"});
+     // The native E4P axis is not yet reliable for vehicle side doors.
+     // Preserve the verified geometry hinge for off-centre cab/side doors.
+     // Only try native horizontal-axis equipment when attached near the
+     // vehicle centreline (typical rear ramp or tailgate).
+     let side_attachment=(child.position[1]-body_mid_side).abs()>body_half_width*0.30;
+     let native_axis=child.door_axis.map(|a|[a[0],a[2],-a[1]]);
+     let horizontal=native_axis.is_some_and(|a|a[1].abs()<0.5);
+     let use_native=horizontal&&!side_attachment&&child.open_angle.is_some();
+     let direction=if door_side>=body_mid_side{1.0}else{-1.0};
+     let pivot_x=if front_door{max[0]}else{min[0]};
+     let fallback_pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
+     // A horizontal equipment hinge uses its actual E4P child origin; mesh
+     // bounds are not the articulated joint and cause detached-looking ramps.
+     let pivot=if use_native{[child.position[0],child.position[2],-child.position[1]]}
+       else{fallback_pivot};
+     let axis=if use_native{native_axis.unwrap()}else{[0.,1.,0.]};
+     let angle=if use_native{child.open_angle.unwrap().to_radians()}
+       else{direction*65.0f32.to_radians()};
+     let native=use_native;
+     println!("Door {}: pivot {:?} axis {:?} angle {:.1} source {} side_offset {:.2}",
+       child.prototype,pivot,axis,angle.to_degrees(),
+       if native{"native horizontal equipment"}else{"verified side-door fallback"},
+       (child.position[1]-body_mid_side).abs());
      doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot,direction,prototype:child.prototype.clone(),axis,angle,native});
     }
     loaded+=1;
