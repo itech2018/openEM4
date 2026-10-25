@@ -68,15 +68,18 @@ struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup)>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
- initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,
+ initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,wireframe:bool,
 }
 impl Viewer {
  async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
+  // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
   let vertices:Vec<Vertex>=mesh.vertices.iter().map(|v|{
-   for i in 0..3 {min[i]=min[i].min(v.position[i]);max[i]=max[i].max(v.position[i]);}
-   Vertex{pos:v.position,normal:v.normal,uv:v.uv}
+   let position=[v.position[0],v.position[2],-v.position[1]];
+   let normal=[v.normal[0],v.normal[2],-v.normal[1]];
+   for i in 0..3 {min[i]=min[i].min(position[i]);max[i]=max[i].max(position[i]);}
+   Vertex{pos:position,normal,uv:v.uv}
   }).collect();
   let target=[(min[0]+max[0])*0.5,(min[1]+max[1])*0.5,(min[2]+max[2])*0.5];
   let diagonal=((max[0]-min[0]).powi(2)+(max[1]-min[1]).powi(2)+(max[2]-min[2]).powi(2)).sqrt();
@@ -158,7 +161,7 @@ impl Viewer {
    label:Some("V3O triangles"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,wireframe:false})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -263,8 +266,12 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
      window.request_redraw();
     }
     WindowEvent::KeyboardInput{event,..}=>{
-     if event.state==ElementState::Pressed && event.physical_key==PhysicalKey::Code(KeyCode::KeyR){
-      viewer.camera=viewer.initial_camera;window.request_redraw();
+     if event.state==ElementState::Pressed {
+      match event.physical_key {
+       PhysicalKey::Code(KeyCode::KeyR)=>{viewer.camera=viewer.initial_camera;window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyW)=>{viewer.wireframe=!viewer.wireframe;window.request_redraw();},
+       _=>{}
+      }
      }
     }
     _=>{}
