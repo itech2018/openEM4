@@ -203,16 +203,32 @@ impl Viewer {
    let kind:u8=if tex.contains("blue"){1}else if tex.contains("red"){0}
     else if tex.contains("yellow"){3}else{2};
    let id=match kind{0=>0.1,1=>0.3,2=>0.5,_=>0.8};
-   // Convert native EM4 Z-up positions to the viewer's Y-up basis.
-   let p=[light.position[0],light.position[2],-light.position[1]];
    let start=mi.len() as u32;
-   let base=mv.len() as u32;
-   for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
-    mv.push(Vertex{pos:[p[0]+dx*radius,p[1],p[2]+dz*radius],
-     normal:[0.0,1.0,0.0],uv:[id,0.0]});
+   // Light point arrays describe source polygon geometry; their centroid is
+   // NOT a reliable light position. Preserve each original vertex.
+   if light.points.len()>=3 {
+    let base=mv.len() as u32;
+    for point in &light.points {
+     let p=[point[0],point[2],-point[1]];
+     mv.push(Vertex{pos:p,normal:[0.0,1.0,0.0],uv:[id,0.0]});
+    }
+    for n in 1..light.points.len()-1 {
+     mi.extend_from_slice(&[base,base+n as u32,base+n as u32+1]);
+    }
+   } else {
+    // One-point definitions are displayed as diagnostic markers.
+    for point in &light.points {
+     let p=[point[0],point[2],-point[1]];
+     let base=mv.len() as u32;
+     for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
+      mv.push(Vertex{pos:[p[0]+dx*radius,p[1],p[2]+dz*radius],
+       normal:[0.0,1.0,0.0],uv:[id,0.0]});
+     }
+     mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
+    }
    }
-   mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
-   light_markers.push((start..start+6,kind,light.flash_frequency,light.flash_offset));
+   let end=mi.len() as u32;
+   if end>start{light_markers.push((start..end,kind,light.flash_frequency,light.flash_offset));}
   }
   println!("Loaded {} original E4P light definitions",light_markers.len());
   // GPU buffers require non-empty data even when the prototype has no lights.
