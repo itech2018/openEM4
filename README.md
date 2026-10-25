@@ -147,3 +147,9 @@ The V3O viewer now draws **temporary colored diagnostic quads** when vehicle lig
 The viewer now reads light point sets directly from the original vehicle `.e4p`. The binary decoder also extracts each light's `coronatex`, `flashfreq`, `flashoffs`, `coronasize`, `lighttype` and `color`. Approximate bounding-box markers are removed. Markers are placed at the mean of each decoded light's point set, converted from EM4 Z-up coordinates to viewer Y-up. Console output lists every recovered light.
 
 Important limitations: this is the first experimental decoder for the observed ASF binary E4P layout, **not a verified complete light definition interpreter**. The markers are still plain coloured quads, not actual textured coronas or lights. The type-to-control mapping uses corona texture filenames as a heuristic; full brake/indicator/headlight categorisation, source colour, polygon orientation, intensity and original game flashing semantics need validation. No original assets are modified. Testing must confirm E4P records decode correctly in the Windows build.
+
+## Source-defined E4P light polygons (ASF correction)
+
+The original ASF file contains 17 binary `light` records with point lists. Some represent a polygon spanning multiple positions, **not** a single emitter centred at the arithmetic mean. The preview now triangulates each recorded list (or draws a small marker for a single point), preserving the recorded coordinates. The prior centroid-based preview could put a floating light in the wrong location.
+
+This is a diagnostic geometry pass. It still does not reproduce the engine's original light texture mapping, corona billboarding, per-light colour/intensity, material flags or complete flash modes. Some recorded polygons can be coplanar with vehicle geometry and hidden by the depth test; source point data should be inspected in console output before assuming a missing light.
