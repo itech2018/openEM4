@@ -157,3 +157,7 @@ This is a diagnostic geometry pass. It still does not reproduce the engine's ori
 ## Light-point diagnostic correction
 
 The E4P viewer now shows a small separate marker at **every** parsed light point instead of connecting points into filled red/blue polygons. The light parser also uses a shorter bounded scan and stops at additional prototype section keys to reduce accidentally combining unrelated records. This remains a diagnostic, not confirmed original-game corona rendering; marker positions need validation against source files. The repository update has not been locally compiled.
+
+## E4P light anchor correction
+
+The ASF binary E4P stores a separate `offset` vector (UTF-16 string such as `163, -47, 30`) in each light record. Previous diagnostics incorrectly used `points` as model-space locations, producing distant floating markers. The decoder now extracts the offset into `Light.position` and the viewer renders one marker at that anchor, preserving local polygon points for later corona/area-light geometry decoding. Light entries with no valid offset are not rendered. Full E4P hierarchy transforms, corona visuals and behaviour are not yet validated. Original assets remain read-only.
