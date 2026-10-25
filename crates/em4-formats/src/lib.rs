@@ -4,6 +4,7 @@
 pub mod dds;
 pub mod e4p;
 pub mod e4p_binary;
+pub mod e4p_assembly;
 pub mod v3o_text;
 pub mod v3o_packed;
 pub mod v3o_mesh;
