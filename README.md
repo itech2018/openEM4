@@ -199,3 +199,7 @@ The V3O/E4P viewer now resolves texture references relative to the source V3O fi
 ## Door motion preview (experimental)
 
 Press **D** in `em4-view` to toggle a simple open/closed pose for child attachments classified as doors by the E4P assembly parser. The viewer keeps a copy of the closed vertex buffer, then rotates door-only vertices and normals around their decoded E4P child anchor. No source assets are modified. This is **not** yet authentic Emergency 4 door animation: hinge axis and 65-degree opening angle are provisional, child hierarchy/hinge definitions and multiple door controls remain to be reverse-engineered, and it does not update collision or gameplay. If no door child is decoded, D has no visual effect. The code has not been independently built or visually tested.
+
+## Smooth individual door preview
+
+Doors now interpolate smoothly between closed and a provisional 65° pose using eased, time-based motion (~0.77 seconds per full stroke). Press **0** to select all detected doors or **1–9** to select an individual door by its printed assembly order, then press **D** to toggle that selection. The viewer recomputes each frame from untouched closed vertices, avoiding cumulative drift, and redraws while doors move. The hinge and angle are provisional and do not yet decode native door animation. This is viewer-only and leaves original data intact.
