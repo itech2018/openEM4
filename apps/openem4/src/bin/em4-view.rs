@@ -83,9 +83,10 @@ fn estimated_mip_bytes(w:u32,h:u32)->u64{
  loop {bytes=bytes.saturating_add(w.saturating_mul(h).saturating_mul(4));if w==1&&h==1{break;}w=(w/2).max(1);h=(h/2).max(1);}
  bytes
 }
-struct ResidentEnhancement {indices:Vec<usize>,bytes:u64}
-struct EnhancedTexture { indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,w:u32,h:u32,pixels:Vec<u8> }
-struct EnhancementJob {indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
+struct ResidentEnhancement {indices:Vec<usize>,bytes:u64,job_id:usize}
+struct EnhancedTexture { job_id:usize,indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,w:u32,h:u32,pixels:Vec<u8> }
+#[derive(Clone)]
+struct EnhancementJob {job_id:usize,indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
 fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,w:u32,h:u32,pixels:Vec<u8>)->Result<wgpu::BindGroup,String>{
  let levels=32-w.max(h).leading_zeros();
  let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O texture"),
@@ -115,7 +116,7 @@ struct Viewer {
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
- material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
+ material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -182,8 +183,8 @@ impl Viewer {
     let Ok(job)=job else{return};
     let (w,h,pixels)=texture_upscale::upscale(job.w,job.h,job.pixels,job.scale);
     let indices=job.indices;
-    if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{indices,w,h,pixels});}
-    else{let _=complete.send(EnhancedTexture{indices,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
+    if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{job_id:job.job_id,indices,w,h,pixels});}
+    else{let _=complete.send(EnhancedTexture{job_id:job.job_id,indices,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
    });
   }
   let mut staged_jobs=Vec::<(usize,EnhancementJob,blake3::Hash)>::new();
@@ -205,7 +206,7 @@ impl Viewer {
       if let Ok(mut group)=indices.lock(){group.push(i);duplicate_count+=1;}
      }else{
       let indices=std::sync::Arc::new(std::sync::Mutex::new(vec![i]));
-      let job=EnhancementJob{indices:indices.clone(),name:surface.texture.clone(),w,h,pixels:pixels.clone(),scale};
+      let job=EnhancementJob{job_id:staged_jobs.len(),indices:indices.clone(),name:surface.texture.clone(),w,h,pixels:pixels.clone(),scale};
       // Stage jobs so large visible mesh surfaces get first chance at the
       // bounded queue, rather than ordering by unrelated surface-file order.
       let triangles=mesh.triangles.iter().filter(|t|t.surface_index==i).count();
@@ -231,6 +232,9 @@ impl Viewer {
   }
   let pending_enhancements=staged_jobs.into_iter().map(|(triangles,job,_)|(triangles,job)).collect::<Vec<_>>();
   enhancement_total=pending_enhancements.len();
+  let restore_jobs=pending_enhancements.clone();
+  let restore_eligible_at=vec![Instant::now();restore_jobs.len()];
+  let restore_pending=vec![false;restore_jobs.len()];
   drop(enhance_tx);
   println!("Enhancement candidates: {} unique jobs ({} duplicate surface requests joined); priority adapts to camera",enhancement_total,duplicate_count);
     let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
@@ -375,13 +379,39 @@ impl Viewer {
   let depth=depth(&device,config.width,config.height);
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
   for (i,d) in self.doors.iter().enumerate(){
    println!("Door {} {}: pivot {:?}, swing {}, animation {:.0}%",
     i+1,d.prototype,d.pivot,d.angle.to_degrees(),self.door_progress[i]*100.0);
+  }
+ }
+ fn queue_evicted_restorations(&mut self){
+  let now=Instant::now();
+  for id in 0..self.restore_jobs.len(){
+   if !self.restore_pending[id]||now<self.restore_eligible_at[id]{continue;}
+   // Do not duplicate already queued work, and never requeue while a job is running.
+   let job=&self.restore_jobs[id].1;
+   if self.pending_enhancements.iter().any(|(_,j)|j.job_id==id){continue;}
+   // Only requeue when some camera motion has occurred: a lower-priority evicted
+   // texture otherwise displaces a useful resident repeatedly.
+   let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
+   let eye=[self.camera.target[0]+self.camera.distance*cp*sy,self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
+   let forward=normalize(sub(self.camera.target,eye));
+   let relevance=|indices:&[usize]|->f32{indices.iter().filter_map(|&i|self.draws.get(i)).map(|d|{
+     let v=sub(d.3,eye);(0.1+0.9*dot(normalize(v),forward).max(0.0))/dot(v,v).sqrt().max(1.0)
+   }).fold(0.0f32,f32::max)};
+   let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
+   let candidate=relevance(&indices);
+   let weakest=self.resident_enhancements.iter().map(|r|relevance(&r.indices)).fold(f32::INFINITY,f32::min);
+   if candidate<=weakest*1.25 {continue;}
+   let (triangles,original_job)=&self.restore_jobs[id];
+   self.pending_enhancements.push((*triangles,original_job.clone()));
+   self.enhancement_total+=1;
+   self.restore_pending[id]=false;
+   println!("Texture restoration queued: {} (camera relevance increased)",original_job.name);
   }
  }
  fn dispatch_enhancements(&mut self){
@@ -432,6 +462,8 @@ impl Viewer {
    let victim=(0..self.resident_enhancements.len()).min_by(|&a,&b|
     score(&self.resident_enhancements[a]).total_cmp(&score(&self.resident_enhancements[b]))).unwrap();
    let old=self.resident_enhancements.swap_remove(victim);
+   if let Some(pending)=self.restore_pending.get_mut(old.job_id){*pending=true;}
+   if let Some(at)=self.restore_eligible_at.get_mut(old.job_id){*at=Instant::now()+std::time::Duration::from_secs(5);}
    for i in old.indices{
     if let (Some(draw),Some(original))=(self.draws.get_mut(i),self.original_materials.get(i)){
      draw.1=original.clone();
@@ -449,6 +481,7 @@ impl Viewer {
    self.enhancement_done+=1;
    self.enhancement_inflight=self.enhancement_inflight.saturating_sub(1);
    if result.w==0||result.h==0 {return false;}
+   if let Some(pending)=self.restore_pending.get_mut(result.job_id){*pending=false;}
    let required=estimated_mip_bytes(result.w,result.h);
    if !self.reclaim_enhancement_memory(required){
     eprintln!("Enhanced texture exceeds GPU budget ({} MiB), retaining original",required/1048576);
@@ -463,7 +496,7 @@ impl Viewer {
       draw.1=new_group.clone();changed=true;count+=1;
      }
     }
-    if count>0{self.enhancement_gpu_used=self.enhancement_gpu_used.saturating_add(required);self.resident_enhancements.push(ResidentEnhancement{indices,bytes:required});}
+    if count>0{self.enhancement_gpu_used=self.enhancement_gpu_used.saturating_add(required);self.resident_enhancements.push(ResidentEnhancement{indices,bytes:required,job_id:result.job_id});}
     println!("Enhanced texture ready {}/{} ({} surface bindings, upgraded GPU usage ~{} MiB)",self.enhancement_done,self.enhancement_total,count,self.enhancement_gpu_used/1048576);
    }
   }
@@ -842,6 +875,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   if let Event::AboutToWait=event {
    target.set_control_flow(if viewer.enhancement_done<viewer.enhancement_total{ControlFlow::WaitUntil(Instant::now()+std::time::Duration::from_millis(33))}else{ControlFlow::Wait});
    let upgraded=viewer.receive_enhancements();
+   viewer.queue_evicted_restorations();
    viewer.dispatch_enhancements();
    let door_moving=viewer.tick_doors();
    if upgraded||door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
