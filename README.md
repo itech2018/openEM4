@@ -116,3 +116,16 @@ Rebuild and open the usual `asf.e4p` with `em4-view` to compare distant body/whe
 The model viewer now classifies a material as transparent when any decoded texture pixel has alpha below 250. It renders fully opaque surfaces first with depth writes, then draws transparent surfaces with alpha blending and depth writes disabled. This is an initial material heuristic, **not** a verified EM4 surface-mode implementation. Transparency is not yet distance-sorted, and cutout geometry may require alpha-test treatment; visually incorrect windows or wheels should be reported.
 
 **Confirmed future texture enhancement:** 4× spatial upscaling, optional/off switch, and a derived-texture cache outside Emergency 4's installation. The original textures will remain unchanged. The enhancement pipeline and cache are planned, not yet implemented.
+
+## Material rendering refinement
+
+The V3O/E4P viewer now uses three material paths based on decoded DDS alpha:
+- **Opaque:** alpha >= 250 everywhere, normal depth writes.
+- **Cutout:** alpha values clustered near zero or full coverage; shader discards texels below 0.5 and writes depth for surviving pixels.
+- **Blended:** intermediate alpha; depth tests enabled but depth writes disabled, with surface batches ordered back-to-front by approximate camera distance.
+
+Each surface classification is printed at startup to help diagnose wheels or windows. The heuristic does not yet decode EM4-specific material flags, and sorting by surface centre is approximate (overlapping triangles inside one surface can still render incorrectly). Wheel coloration could also be a missing/incorrect child texture, so check console messages before treating it as an alpha problem.
+
+**Test:** `cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Data\\Prototypes\\Vehicles\\TEC\\asf.e4p"`
+
+This update has not been independently compiled or visually validated.
