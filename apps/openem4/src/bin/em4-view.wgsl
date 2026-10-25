@@ -11,16 +11,19 @@ struct VOut { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<
  out.uv = v.uv;
  return out;
 }
+fn shade(normal: vec3<f32>) -> f32 {
+ let n = normalize(normal + vec3<f32>(0.00001));
+ let key = max(dot(n,normalize(vec3<f32>(0.45,0.82,0.35))),0.0);
+ let fill = max(dot(n,normalize(vec3<f32>(-0.65,0.3,-0.45))),0.0);
+ let hemi = 0.5 + 0.5*n.y;
+ return clamp(0.36+0.22*hemi+0.34*key+0.08*fill,0.0,1.0);
+}
 @fragment fn fs_main(v: VOut) -> @location(0) vec4<f32> {
  if (camera.debug.x != 0u) {
   return vec4<f32>(normalize(v.normal) * 0.5 + vec3<f32>(0.5), 1.0);
  }
  let texel = textureSample(color_texture, color_sampler, v.uv);
- let n = normalize(v.normal + vec3<f32>(0.00001, 0.00001, 0.00001));
- let light_dir = normalize(vec3<f32>(0.4,0.85,0.45));
- let diffuse = max(dot(n, light_dir), 0.0);
- let lighting = 0.58 + 0.42 * diffuse;
- return vec4<f32>(texel.rgb * lighting, texel.a);
+ return vec4<f32>(texel.rgb * shade(v.normal), texel.a);
 }
 
 @fragment fn fs_cutout(v: VOut) -> @location(0) vec4<f32> {
@@ -29,7 +32,5 @@ struct VOut { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<
  }
  let texel=textureSample(color_texture,color_sampler,v.uv);
  if (texel.a < 0.5) { discard; }
- let n=normalize(v.normal + vec3<f32>(0.00001,0.00001,0.00001));
- let diffuse=max(dot(n,normalize(vec3<f32>(0.4,0.85,0.45))),0.0);
- return vec4<f32>(texel.rgb * (0.58 + 0.42 * diffuse),1.0);
+ return vec4<f32>(texel.rgb * shade(v.normal),1.0);
 }
