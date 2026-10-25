@@ -425,8 +425,9 @@ fn find_corona_file(model_path:&Path,name:&str)->Option<std::path::PathBuf>{
  if name.is_empty()||name.contains(".."){return None}
  let file_name=Path::new(name.replace('\\',"/").as_str()).file_name()?.to_string_lossy().to_string();
  let data=data_root(model_path).ok()?;
- let mut stack=vec![(data.clone(),0usize)];
+ let mut stack=Vec::new();
  if data.parent().and_then(|p|p.file_name()).is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case("Mods")){stack.push((data.parent()?.parent()?.join("Data"),0));}
+ stack.push((data.clone(),0usize));
  let mut visited=0usize;
  while let Some((dir,depth))=stack.pop(){
   visited+=1;if visited>12000 {break}
