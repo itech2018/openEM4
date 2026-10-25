@@ -81,7 +81,7 @@ struct Viewer {
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
- light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,
+ light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,
  lights:LightControls,started:Instant,
 }
 impl Viewer {
@@ -197,38 +197,37 @@ impl Viewer {
   // Original E4P point records; no guessed bounds-based positions.
   let mut mv:Vec<Vertex>=Vec::new();let mut mi:Vec<u32>=Vec::new();
   let mut light_markers=Vec::new();
-  let radius=(diagonal*0.014).max(0.04);
+  let mut corona_anchors=Vec::new();
   for light in light_defs {
    let tex=light.corona_texture.to_ascii_lowercase();
    let kind:u8=if tex.contains("blue"){1}else if tex.contains("red"){0}
     else if tex.contains("yellow"){3}else{2};
-   let id=match kind{0=>0.1,1=>0.3,2=>0.5,_=>0.8};
-   let start=mi.len() as u32;
-   // The original 'offset' field anchors the light. Its 'points' are
-   // local polygon geometry and MUST NOT be treated as world-space positions.
-   let point=&light.position;
-   let p=[point[0],point[2],-point[1]];
+   let p=[light.position[0],light.position[2],-light.position[1]];
+   // The E4P corona size is used as a relative size. Clamp pathological values.
+   let size=if light.corona_size.is_finite()&&light.corona_size>0.0{
+    (light.corona_size*0.5).clamp(0.08,10.0)
+   }else{0.35};
+   let first=mi.len() as u32;
    let base=mv.len() as u32;
-   for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
-    mv.push(Vertex{pos:[p[0]+dx*radius,p[1],p[2]+dz*radius],
-     normal:[0.0,1.0,0.0],uv:[id,0.0]});
+   for (u,v) in [(0.0,0.0),(1.0,0.0),(1.0,1.0),(0.0,1.0)]{
+    mv.push(Vertex{pos:p,normal:[0.0,0.0,1.0],uv:[kind as f32*2.0+u,v]});
    }
    mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
-   let end=mi.len() as u32;
-   if end>start{light_markers.push((start..end,kind,light.flash_frequency,light.flash_offset));}
+   light_markers.push((first..first+6,kind,light.flash_frequency,light.flash_offset));
+   corona_anchors.push((p,size,kind));
   }
   println!("Loaded {} original E4P light definitions",light_markers.len());
   // GPU buffers require non-empty data even when the prototype has no lights.
   if mv.is_empty() {mv.push(Vertex{pos:[0.;3],normal:[0.,1.,0.],uv:[0.,0.]});mi.push(0);}
   let marker_vertex=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-   label:Some("preview light verts"),contents:bytemuck::cast_slice(&mv),usage:wgpu::BufferUsages::VERTEX});
+   label:Some("preview light verts"),contents:bytemuck::cast_slice(&mv),usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST});
   let marker_index=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("preview light indices"),contents:bytemuck::cast_slice(&mi),usage:wgpu::BufferUsages::INDEX});
   let marker_pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
    label:Some("preview light pipeline"),layout:Some(&pipeline_layout),
    vertex:wgpu::VertexState{module:&shader,entry_point:"vs_main",buffers:&[Vertex::desc()],compilation_options:Default::default()},
    fragment:Some(wgpu::FragmentState{module:&shader,entry_point:"fs_emissive",
-    targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})],compilation_options:Default::default()}),
+    targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})],compilation_options:Default::default()}),
    primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
    depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth24Plus,
     depth_write_enabled:false,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
@@ -265,7 +264,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,light_markers,lights:LightControls::default(),started:Instant::now()})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,light_markers,corona_anchors,lights:LightControls::default(),started:Instant::now()})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -274,6 +273,20 @@ impl Viewer {
  fn render(&mut self)->Result<(),wgpu::SurfaceError>{
   let matrix=self.camera.matrix(self.config.width as f32/self.config.height as f32);
   self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix,debug:[u32::from(self.debug_normals),self.lights.phase(self.started.elapsed().as_secs_f32())[0],self.lights.phase(self.started.elapsed().as_secs_f32())[2],self.lights.phase(self.started.elapsed().as_secs_f32())[3]]}));
+  // Rebuild camera-facing corona quads; the anchors remain the decoded E4P offsets.
+  if !self.corona_anchors.is_empty(){
+   let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
+   let right=[cy,0.0,-sy];let up=[-sp*sy,cp,-sp*cy];
+   let mut vertices=Vec::with_capacity(self.corona_anchors.len()*4);
+   for (center,size,kind) in &self.corona_anchors {
+    for (u,v) in [(0.0f32,0.0f32),(1.0,0.0),(1.0,1.0),(0.0,1.0)] {
+     let x=(u-0.5)*2.0*size;let y=(v-0.5)*2.0*size;
+     let pos=[center[0]+right[0]*x+up[0]*y,center[1]+right[1]*x+up[1]*y,center[2]+right[2]*x+up[2]*y];
+     vertices.push(Vertex{pos,normal:[0.0,0.0,1.0],uv:[*kind as f32*2.0+u,v]});
+    }
+   }
+   self.queue.write_buffer(&self.marker_vertex,0,bytemuck::cast_slice(&vertices));
+  }
   let frame=self.surface.get_current_texture()?;
   let view=frame.texture.create_view(&Default::default());
   let mut encoder=self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label:Some("V3O frame")});
