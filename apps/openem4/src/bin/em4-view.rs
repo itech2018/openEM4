@@ -69,6 +69,7 @@ struct Viewer {
  pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup)>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
+ ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
 }
 impl Viewer {
  async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path)->Result<Self,String>{
@@ -159,9 +160,34 @@ impl Viewer {
    label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX});
   let index_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("V3O triangles"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
+  // Flat reference plane positioned just below the loaded geometry.
+  let radius=(diagonal*0.95).max(3.0);
+  let floor=min[1]-0.03;
+  let ground_verts=[
+   Vertex{pos:[target[0]-radius,floor,target[2]-radius],normal:[0.0,1.0,0.0],uv:[0.0,0.0]},
+   Vertex{pos:[target[0]+radius,floor,target[2]-radius],normal:[0.0,1.0,0.0],uv:[1.0,0.0]},
+   Vertex{pos:[target[0]+radius,floor,target[2]+radius],normal:[0.0,1.0,0.0],uv:[1.0,1.0]},
+   Vertex{pos:[target[0]-radius,floor,target[2]+radius],normal:[0.0,1.0,0.0],uv:[0.0,1.0]},
+  ];
+  let ground_vertex=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+   label:Some("ground positions"),contents:bytemuck::cast_slice(&ground_verts),usage:wgpu::BufferUsages::VERTEX});
+  let ground_index=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+   label:Some("ground triangles"),contents:bytemuck::cast_slice(&[0u32,2,1,0,3,2]),usage:wgpu::BufferUsages::INDEX});
+  let ground_tex=device.create_texture(&wgpu::TextureDescriptor{label:Some("ground reference texture"),
+   size:wgpu::Extent3d{width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,
+   dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
+   usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
+  queue.write_texture(wgpu::ImageCopyTexture{texture:&ground_tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
+   &[85,94,108,255],wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(4),rows_per_image:Some(1)},
+   wgpu::Extent3d{width:1,height:1,depth_or_array_layers:1});
+  let ground_view=ground_tex.create_view(&Default::default());
+  let ground_material=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("ground material"),
+   layout:&material_layout,entries:&[
+    wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&ground_view)},
+    wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -182,6 +208,13 @@ impl Viewer {
      view:&self.depth.view,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(1.0),store:wgpu::StoreOp::Store}),
      stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None});
    pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);
+   pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
+   if self.show_ground {
+    pass.set_bind_group(1,&self.ground_material,&[]);
+    pass.set_vertex_buffer(0,self.ground_vertex.slice(..));
+    pass.set_index_buffer(self.ground_index.slice(..),wgpu::IndexFormat::Uint32);
+    pass.draw_indexed(0..6,0,0..1);
+   }
    pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
    for (range,material) in &self.draws {pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);}
   }
@@ -270,6 +303,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
       match event.physical_key {
        PhysicalKey::Code(KeyCode::KeyR)=>{viewer.camera=viewer.initial_camera;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyW)=>{viewer.debug_normals=!viewer.debug_normals;window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyG)=>{viewer.show_ground=!viewer.show_ground;window.request_redraw();},
        _=>{}
       }
      }
