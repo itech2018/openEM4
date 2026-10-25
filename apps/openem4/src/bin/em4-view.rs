@@ -199,6 +199,7 @@ impl Viewer {
   let mut light_markers=Vec::new();
   let mut corona_anchors=Vec::new();
   let mut corona_materials=Vec::new();
+  let mut corona_cache=std::collections::HashMap::<String,Option<std::path::PathBuf>>::new();
   for light in light_defs {
    let tex=light.corona_texture.to_ascii_lowercase();
    let kind:u8=if tex.contains("blue"){1}else if tex.contains("red"){0}
@@ -217,8 +218,9 @@ impl Viewer {
    light_markers.push((first..first+6,kind,light.flash_frequency,light.flash_offset));
    // Resolve legacy corona TGA by basename under the source game's Data folder.
    // Fallback to an in-memory radial alpha mask if the original cannot be read.
-   let loaded=find_corona_file(model_path,&light.corona_texture)
-    .and_then(|file|image::open(&file).ok().map(|im|(file,im.to_rgba8())));
+   let cache_key=light.corona_texture.to_ascii_lowercase();
+   let corona_path=corona_cache.entry(cache_key).or_insert_with(||find_corona_file(model_path,&light.corona_texture));
+   let loaded=corona_path.as_ref().and_then(|file|image::open(file).ok().map(|im|(file.clone(),im.to_rgba8())));
    let rgba=if let Some((file,img))=loaded {
     println!("Loaded original E4P corona: {}",file.display());img
    } else {
