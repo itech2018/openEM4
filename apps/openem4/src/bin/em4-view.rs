@@ -110,7 +110,7 @@ impl Viewer {
    usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST});
   let layout=device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
    label:Some("camera bind layout"),entries:&[wgpu::BindGroupLayoutEntry{
-    binding:0,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{
+    binding:0,visibility:wgpu::ShaderStages::VERTEX_FRAGMENT,ty:wgpu::BindingType::Buffer{
      ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None
    }]});
   let bind=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("camera bind"),
