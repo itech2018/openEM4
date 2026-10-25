@@ -176,7 +176,7 @@ impl Viewer {
     let Ok(job)=job else{return};
     let (w,h,pixels)=texture_upscale::upscale(job.w,job.h,job.pixels,job.scale);
     if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{index:job.index,w,h,pixels});}
-    else{eprintln!("Enhancement skipped for {}",job.name);}
+    else{let _=complete.send(EnhancedTexture{index:job.index,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
    });
   }
   let mut enhancement_total=0usize;
@@ -365,9 +365,11 @@ impl Viewer {
   let mut changed=false;
   // Budget uploads to one texture per event loop iteration.
   if let Ok(result)=self.enhancements.try_recv(){
+   self.enhancement_done+=1;
+   if result.w==0||result.h==0{return false;}
    if let Ok(new_group)=material_group(&self.device,&self.queue,&self.material_layout,&self.material_sampler,result.w,result.h,result.pixels){
     if let Some(draw)=self.draws.get_mut(result.index){
-     draw.1=new_group;changed=true;self.enhancement_done+=1;
+     draw.1=new_group;changed=true;
      println!("Enhanced texture ready {}/{}",self.enhancement_done,self.enhancement_total);
     }
    }
@@ -745,6 +747,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
+   target.set_control_flow(if viewer.enhancement_done<viewer.enhancement_total{ControlFlow::WaitUntil(Instant::now()+std::time::Duration::from_millis(33))}else{ControlFlow::Wait});
    let upgraded=viewer.receive_enhancements();
    let door_moving=viewer.tick_doors();
    if upgraded||door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
