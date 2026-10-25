@@ -388,9 +388,13 @@ impl Viewer {
    pass.set_vertex_buffer(0,self.marker_vertex.slice(..));
    pass.set_index_buffer(self.marker_index.slice(..),wgpu::IndexFormat::Uint32);
    for (index,(range,kind,frequency,offset)) in self.light_markers.iter().enumerate() {
-    let pulse=!frequency.is_finite()||*frequency<=0.0 || ((t*frequency.min(20.0)+offset).fract()<0.5);
+    // Per-light phase. The source frequency and phase are independent for
+    // each E4P record. Their exact EM4 time units still require verification.
+    let pulse=em4_formats::e4p_lights::preview_flash_on(t,*frequency,*offset);
+    // Red/blue corona entries are emergency equipment by default; do not
+    // activate every red emergency lamp when pressing the brake key.
     let enabled=match kind {
-     0|1=>self.lights.beacon||self.lights.brake,
+     0|1=>self.lights.beacon,
      2=>self.lights.headlights,
      _=>self.lights.left||self.lights.right
     };
