@@ -104,3 +104,9 @@ The flag alters only the child attachment rotation, not the main vehicle geometr
 ## ASF wheel-placement scale correction
 
 The original ASF E4P wheel positions use offsets approximately X=+98/+96 for one axle and X=-58/-56 for the other (Y around +/-40, Z around 21). The previous viewer erroneously divided E4P attachment translations by 100 while V3O vertex coordinates were already converted into the viewer's working units. The assembler now preserves the E4P offsets directly. This is based on the ASF model and needs visual confirmation with other prototypes. The `--transpose-attachment-rotation` comparison option remains available for rotation diagnostics.
+
+## Texture filtering improvements
+
+The V3O viewer now builds a complete CPU mipmap pyramid from decoded vehicle textures and enables trilinear filtering. These mipmaps are in GPU memory only; original game DDS files are never changed. Future automatic 2×/4× texture enhancement (including optional AI super-resolution) is in `docs/ROADMAP.md` and **is not yet implemented**.
+
+Rebuild and open the usual `asf.e4p` with `em4-view` to compare distant body/wheel texture aliasing.
