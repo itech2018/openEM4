@@ -181,3 +181,13 @@ Press **O** in `em4-view` to toggle corona depth occlusion. Default remains **of
 ## Per-light E4P flash phase — initial behaviour pass
 
 Each light now evaluates its own recorded `flashfreq` and `flashoffs`, using a reusable, tested flash-phase helper. Red/blue corona lights are controlled by the emergency beacon key `E`; the `B` brake key no longer wrongly activates all red emergency beacons. Headlights and amber indicators retain their preview controls. The visual flash interpretation is still **provisional**: the original E4P light-type enum and flash frequency units are not yet fully verified, and categorisation still uses corona filenames. A follow-up pass must decode explicit light types, duration/duty cycle, vehicle-specific groups, and indicator left/right membership without guessing from colours. The update has not yet been independently compiled on Windows.
+
+## Loading Emergency 4 mods
+
+The prototype viewer supports both base-game `Data/Prototypes/...` and installed mods under `Mods/<mod name>/Prototypes/...`, for example:
+
+```powershell
+cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Mods\\London Mod v1.3\\Prototypes\\Vehicles\\Metropolitan Police\\astra01.e4p"
+```
+
+Relative `mod:` model and child-prototype references resolve against the selected mod root first, and fall back to the base `Data` directory when missing. Corona TGA lookup searches both, preferring the mod override. This fixes the previous fatal `E4P must be within an Emergency 4 Data directory` error. Some mods may use unsupported reference syntaxes or formats; the change has not been independently compiled on Windows.
