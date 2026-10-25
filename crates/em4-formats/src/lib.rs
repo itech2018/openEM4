@@ -2,6 +2,7 @@
 //! This module does NOT yet decode packed V3O geometry or E4P prototypes.
 
 pub mod dds;
+pub mod v3o_text;
 use serde::Serialize;
 use std::{fs, io, path::Path};
 
