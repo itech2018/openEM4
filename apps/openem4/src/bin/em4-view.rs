@@ -19,7 +19,7 @@ impl Vertex {
 }
 #[repr(C)]
 #[derive(Clone,Copy,bytemuck::Pod,bytemuck::Zeroable)]
-struct Uniform { matrix:[[f32;4];4] }
+struct Uniform { matrix:[[f32;4];4], debug:[u32;4] }
 #[derive(Clone,Copy)]
 struct Camera {yaw:f32,pitch:f32,distance:f32,target:[f32;3]}
 impl Camera {
@@ -68,7 +68,7 @@ struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup)>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
- initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,wireframe:bool,
+ initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
 }
 impl Viewer {
  async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path)->Result<Self,String>{
@@ -106,7 +106,7 @@ impl Viewer {
    alpha_mode:caps.alpha_modes[0],view_formats:vec![],desired_maximum_frame_latency:2};
   surface.configure(&device,&config);
   let uniform=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("camera"),
-   contents:bytemuck::bytes_of(&Uniform{matrix:camera.matrix(config.width as f32/config.height as f32)}),
+   contents:bytemuck::bytes_of(&Uniform{matrix:camera.matrix(config.width as f32/config.height as f32),debug:[0;4]}),
    usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST});
   let layout=device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
    label:Some("camera bind layout"),entries:&[wgpu::BindGroupLayoutEntry{
@@ -161,7 +161,7 @@ impl Viewer {
    label:Some("V3O triangles"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,wireframe:false})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -169,7 +169,7 @@ impl Viewer {
  }
  fn render(&mut self)->Result<(),wgpu::SurfaceError>{
   let matrix=self.camera.matrix(self.config.width as f32/self.config.height as f32);
-  self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix}));
+  self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix,debug:[u32::from(self.wireframe),0,0,0]}));
   let frame=self.surface.get_current_texture()?;
   let view=frame.texture.create_view(&Default::default());
   let mut encoder=self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label:Some("V3O frame")});
@@ -269,7 +269,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
        PhysicalKey::Code(KeyCode::KeyR)=>{viewer.camera=viewer.initial_camera;window.request_redraw();},
-       PhysicalKey::Code(KeyCode::KeyW)=>{viewer.wireframe=!viewer.wireframe;window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyW)=>{viewer.debug_normals=!viewer.debug_normals;window.request_redraw();},
        _=>{}
       }
      }
