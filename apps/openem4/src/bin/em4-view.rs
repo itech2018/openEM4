@@ -78,6 +78,28 @@ impl LightControls {
 }
 #[derive(Clone)]
 struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String,axis:[f32;3],angle:f32,native:bool }
+struct EnhancedTexture { index:usize,w:u32,h:u32,pixels:Vec<u8> }
+fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,w:u32,h:u32,pixels:Vec<u8>)->Result<wgpu::BindGroup,String>{
+ let levels=32-w.max(h).leading_zeros();
+ let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O texture"),
+  size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:levels,sample_count:1,
+  dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
+  usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
+ let mut img=image::RgbaImage::from_raw(w,h,pixels).ok_or("invalid RGBA material buffer")?;
+ for mip in 0..levels{
+  let (mw,mh)=img.dimensions();
+  queue.write_texture(wgpu::ImageCopyTexture{texture:&texture,mip_level:mip,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
+   img.as_raw(),wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(mw*4),rows_per_image:Some(mh)},
+   wgpu::Extent3d{width:mw,height:mh,depth_or_array_layers:1});
+  if mip+1<levels{img=image::imageops::resize(&img,(mw/2).max(1),(mh/2).max(1),image::imageops::FilterType::Triangle);}
+ }
+ let view=texture.create_view(&Default::default());
+ Ok(device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("V3O material bind"),layout,entries:&[
+  wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
+  wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(sampler)}
+ ]}))
+}
+
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
@@ -86,6 +108,7 @@ struct Viewer {
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
+ material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -142,37 +165,30 @@ impl Viewer {
    ]});
   let sampler=device.create_sampler(&wgpu::SamplerDescriptor{address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
    mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,mipmap_filter:wgpu::FilterMode::Linear,..Default::default()});
+  let (enhance_tx,enhance_rx)=std::sync::mpsc::channel::<EnhancedTexture>();
+  let mut enhancement_total=0usize;
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
-   let (w,h,pixels)=if upscale_factor==0 {(w,h,pixels)}
-    else if upscale_factor==4 {texture_upscale::upscale(w,h,pixels,4)}
-    else {texture_upscale::enhance_auto(&surface.texture,w,h,pixels)};
+   if upscale_factor!=0{
+    let scale=if upscale_factor==4{4}else{texture_upscale::automatic_factor(&surface.texture,w,h,&pixels)};
+    if scale>1 {
+     enhancement_total+=1;
+     let tx=enhance_tx.clone();let input=pixels.clone();let name=surface.texture.clone();let index=i;
+     std::thread::spawn(move||{
+      let (nw,nh,output)=texture_upscale::upscale(w,h,input,scale);
+      if nw!=w||nh!=h{let _=tx.send(EnhancedTexture{index,w:nw,h:nh,pixels:output});}
+      else{eprintln!("Enhancement skipped for: {name}");}
+     });
+    }
+   }
    let alpha:Vec<u8>=pixels.chunks_exact(4).map(|pixel|pixel[3]).collect();
    let (min_alpha,max_alpha)=alpha.iter().fold((255u8,0u8),|(lo,hi),&a|(lo.min(a),hi.max(a)));
    let has_alpha=alpha.iter().any(|&a|a<250);
    let binary_alpha=alpha.iter().all(|&a|a<24||a>231);
    let material_kind=if !has_alpha{0u8}else if binary_alpha{1u8}else{2u8};
    println!("Material {} {} texture={} mode={} size={}x{} alpha={}..{}",i,surface.name,surface.texture,match material_kind{0=>"opaque",1=>"cutout",_=>"blended"},w,h,min_alpha,max_alpha);
-   let levels = 32 - w.max(h).leading_zeros();
-   let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O material"),
-    size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:levels,sample_count:1,
-    dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
-    usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
-   let mut image=image::RgbaImage::from_raw(w,h,pixels).ok_or("DDS decoder returned invalid RGBA length")?;
-   for mip in 0..levels {
-    let mw=image.width();let mh=image.height();
-    queue.write_texture(wgpu::ImageCopyTexture{texture:&texture,mip_level:mip,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
-     image.as_raw(),wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(mw*4),rows_per_image:Some(mh)},
-     wgpu::Extent3d{width:mw,height:mh,depth_or_array_layers:1});
-    if mip+1<levels {
-     image=image::imageops::resize(&image,(mw/2).max(1),(mh/2).max(1),image::imageops::FilterType::Triangle);
-    }
-   }
-   let view=texture.create_view(&Default::default());
-   let group=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("V3O surface bind"),layout:&material_layout,
-    entries:&[wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
-     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
+   let group=material_group(&device,&queue,&material_layout,&sampler,w,h,pixels)?;
    let mut center=[0.0f32;3];let mut count=0f32;
    for t in mesh.triangles.iter().filter(|t|t.surface_index==i){
     for &v in &t.indices {let p=vertices[v as usize].pos;for axis in 0..3{center[axis]+=p[axis];}count+=1.0;}
@@ -180,6 +196,8 @@ impl Viewer {
    if count>0.0 {for x in &mut center{*x/=count;}}
    draws.push((ranges[i].clone(),group,material_kind,center));
   }
+  drop(enhance_tx);
+  println!("Enhancement jobs queued: {}",enhancement_total);
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
@@ -321,7 +339,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -329,6 +347,19 @@ impl Viewer {
    println!("Door {} {}: pivot {:?}, swing {}, animation {:.0}%",
     i+1,d.prototype,d.pivot,d.angle.to_degrees(),self.door_progress[i]*100.0);
   }
+ }
+ fn receive_enhancements(&mut self)->bool{
+  let mut changed=false;
+  // Budget uploads to one texture per event loop iteration.
+  if let Ok(result)=self.enhancements.try_recv(){
+   if let Ok(new_group)=material_group(&self.device,&self.queue,&self.material_layout,&self.material_sampler,result.w,result.h,result.pixels){
+    if let Some(draw)=self.draws.get_mut(result.index){
+     draw.1=new_group;changed=true;self.enhancement_done+=1;
+     println!("Enhanced texture ready {}/{}",self.enhancement_done,self.enhancement_total);
+    }
+   }
+  }
+  changed
  }
  fn toggle_doors(&mut self){
   if self.doors.is_empty(){println!("No E4P child doors found");return;}
@@ -701,8 +732,9 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
+   let upgraded=viewer.receive_enhancements();
    let door_moving=viewer.tick_doors();
-   if door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
+   if upgraded||door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
   }
   if let Event::WindowEvent{window_id,event}=event {
    if window_id!=window.id(){return;}
