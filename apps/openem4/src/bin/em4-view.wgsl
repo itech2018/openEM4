@@ -36,6 +36,9 @@ fn shade(normal: vec3<f32>) -> f32 {
 }
 
 @fragment fn fs_emissive(v: VOut) -> @location(0) vec4<f32> {
- let texel=textureSample(color_texture,color_sampler,v.uv);
- return vec4<f32>(texel.rgb,1.0);
+ let id=v.uv.x;
+ if (id < 0.2) {return vec4<f32>(1.0,0.03,0.03,1.0);}
+ if (id < 0.4) {return vec4<f32>(0.03,0.15,1.0,1.0);}
+ if (id < 0.6) {return vec4<f32>(1.0,1.0,0.84,1.0);}
+ return vec4<f32>(1.0,0.52,0.02,1.0);
 }
