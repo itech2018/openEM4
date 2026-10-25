@@ -1,6 +1,6 @@
 //! Standalone prototype 3D V3O viewer. Geometry is shaded without textures.
 //! Left mouse: orbit; right mouse: pan; wheel: zoom; R: reset.
-use std::{env, fs, mem, path::Path, sync::Arc};
+use std::{env, fs, mem, path::Path, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{
  event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
@@ -64,12 +64,23 @@ fn depth(device:&wgpu::Device,w:u32,h:u32)->Depth {
  });
  let view=texture.create_view(&Default::default());Depth{texture,view}
 }
+#[derive(Default)]
+struct LightControls { headlights:bool, brake:bool, left:bool, right:bool, beacon:bool }
+impl LightControls {
+ fn phase(&self,seconds:f32)->[u32;4] {
+  let indicator=(seconds*1.5).fract()<0.5;
+  let emergency=(seconds*3.0).fract()<0.5;
+  [u32::from(self.headlights),u32::from(self.brake),
+   u32::from(indicator&&(self.left||self.right)),u32::from(self.beacon&&emergency)]
+ }
+}
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
+ lights:LightControls,started:Instant,
 }
 impl Viewer {
  async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path)->Result<Self,String>{
@@ -212,7 +223,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,lights:LightControls::default(),started:Instant::now()})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -220,7 +231,7 @@ impl Viewer {
  }
  fn render(&mut self)->Result<(),wgpu::SurfaceError>{
   let matrix=self.camera.matrix(self.config.width as f32/self.config.height as f32);
-  self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix,debug:[u32::from(self.debug_normals),0,0,0]}));
+  self.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{matrix,debug:[u32::from(self.debug_normals),self.lights.phase(self.started.elapsed().as_secs_f32())[0],self.lights.phase(self.started.elapsed().as_secs_f32())[2],self.lights.phase(self.started.elapsed().as_secs_f32())[3]]}));
   let frame=self.surface.get_current_texture()?;
   let view=frame.texture.create_view(&Default::default());
   let mut encoder=self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label:Some("V3O frame")});
@@ -413,6 +424,9 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
+  if let Event::AboutToWait=event {
+   if viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
+  }
   if let Event::WindowEvent{window_id,event}=event {
    if window_id!=window.id(){return;}
    match event {
@@ -445,6 +459,11 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
        PhysicalKey::Code(KeyCode::KeyR)=>{viewer.camera=viewer.initial_camera;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyW)=>{viewer.debug_normals=!viewer.debug_normals;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyG)=>{viewer.show_ground=!viewer.show_ground;window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyH)=>{viewer.lights.headlights=!viewer.lights.headlights;println!("Headlights: {}",viewer.lights.headlights);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyB)=>{viewer.lights.brake=!viewer.lights.brake;println!("Brake lights: {}",viewer.lights.brake);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyL)=>{viewer.lights.left=!viewer.lights.left;println!("Left indicator: {}",viewer.lights.left);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyK)=>{viewer.lights.right=!viewer.lights.right;println!("Right indicator: {}",viewer.lights.right);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyE)=>{viewer.lights.beacon=!viewer.lights.beacon;println!("Beacon: {}",viewer.lights.beacon);window.request_redraw();},
        _=>{}
       }
      }
