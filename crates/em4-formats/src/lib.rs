@@ -74,8 +74,13 @@ mod tests {
         assert_eq!(inspect_bytes("dds", &b).unwrap(), Inspection::Dds { width: 512, height: 256, mipmaps: 1, fourcc: "DXT5".into() });
     }
     #[test] fn malformed_dds() { assert!(inspect_bytes("dds", b"DDS ").is_err()); }
-    #[test] fn opaque_v3o() {
-        assert_eq!(inspect_bytes("v3o", &[0,1,2]).unwrap(), Inspection::V3o { representation: "binary_or_unknown".into(), version_hint: None });
+    #[test] fn rejects_truncated_v3o() {
+        // A three-byte blob is neither a valid text V3O nor the packed wrapper.
+        assert_eq!(inspect_bytes("v3o", &[0,1,2]).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+    #[test] fn inspects_text_v3o() {
+        assert_eq!(inspect_bytes("v3o", b"[VNUM=1.43]\r\n").unwrap(),
+            Inspection::V3o { representation: "text_v3o".into(), version_hint: Some("[VNUM=1.43]".into()) });
     }
 }
 
