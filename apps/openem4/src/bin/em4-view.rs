@@ -114,7 +114,7 @@ struct Viewer {
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
- material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,
+ material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -228,35 +228,11 @@ impl Viewer {
    if count>0.0 {for x in &mut center{*x/=count;}}
    draws.push((ranges[i].clone(),Arc::new(group),material_kind,center));
   }
-  // Rank pending textures against the initial camera view rather than V3O
-  // file order. Each shared job uses the best visible associated surface.
-  let (sy,cy)=camera.yaw.sin_cos();let (sp,cp)=camera.pitch.sin_cos();
-  let eye=[camera.target[0]+camera.distance*cp*sy,
-           camera.target[1]+camera.distance*sp,
-           camera.target[2]+camera.distance*cp*cy];
-  let forward=normalize(sub(camera.target,eye));
-  let priority=|triangle_count:usize,job:&EnhancementJob|->f32 {
-   let indices=job.indices.lock().map(|group|group.clone()).unwrap_or_default();
-   let coverage=indices.iter().filter_map(|&i|draws.get(i)).map(|d|{
-    let toward=sub(d.3,eye);
-    let distance2=dot(toward,toward).max(1.0);
-    let facing=dot(normalize(toward),forward);
-    // Points outside the forward hemisphere get no visibility bonus.
-    let visibility=((facing-0.15)/0.85).clamp(0.0,1.0);
-    (0.2+0.8*visibility)/distance2.sqrt()
-   }).fold(0.0_f32,f32::max);
-   triangle_count.max(1) as f32 * coverage
-  };
-  staged_jobs.sort_by(|a,b|priority(b.0,&b.1).total_cmp(&priority(a.0,&a.1)));
-  let staged_count=staged_jobs.len();
-  for (_,job,_) in staged_jobs {
-   if job_tx.try_send(job).is_ok(){enhancement_total+=1;}
-   else{break;}
-  }
-  drop(job_tx);
+  let pending_enhancements=staged_jobs.into_iter().map(|(triangles,job,_)|(triangles,job)).collect::<Vec<_>>();
+  enhancement_total=pending_enhancements.len();
   drop(enhance_tx);
-  println!("Enhancement jobs queued: {}/{} prioritized by initial camera-facing coverage ({} duplicates joined)",enhancement_total,staged_count,duplicate_count);
-  let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
+  println!("Enhancement candidates: {} unique jobs ({} duplicate surface requests joined); priority adapts to camera",enhancement_total,duplicate_count);
+    let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
    label:None,bind_group_layouts:&[&layout,&material_layout],push_constant_ranges:&[]});
@@ -397,7 +373,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -406,11 +382,42 @@ impl Viewer {
     i+1,d.prototype,d.pivot,d.angle.to_degrees(),self.door_progress[i]*100.0);
   }
  }
+ fn dispatch_enhancements(&mut self){
+  // Recompute priority before dispatch so orbit/pan/zoom affects remaining work.
+  // Only two jobs in flight; other candidates stay eligible instead of being dropped.
+  let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
+  let eye=[self.camera.target[0]+self.camera.distance*cp*sy,
+   self.camera.target[1]+self.camera.distance*sp,
+   self.camera.target[2]+self.camera.distance*cp*cy];
+  let forward=normalize(sub(self.camera.target,eye));
+  let score=|triangles:usize,job:&EnhancementJob|->f32{
+   let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
+   let proximity=indices.iter().filter_map(|&index|self.draws.get(index)).map(|draw|{
+    let toward=sub(draw.3,eye);let distance=dot(toward,toward).sqrt().max(1.0);
+    let facing=dot(normalize(toward),forward);
+    (0.1+0.9*((facing-0.15)/0.85).clamp(0.0,1.0))/distance
+   }).fold(0.0_f32,f32::max);
+   triangles.max(1) as f32*proximity
+  };
+  while self.enhancement_inflight<2&&!self.pending_enhancements.is_empty(){
+   let best=(0..self.pending_enhancements.len()).max_by(|&a,&b|{
+    let (ta,ja)=&self.pending_enhancements[a];let (tb,jb)=&self.pending_enhancements[b];
+    score(*ta,ja).total_cmp(&score(*tb,jb))
+   }).unwrap();
+   let (_,job)=self.pending_enhancements.swap_remove(best);
+   match self.enhancement_sender.try_send(job){
+    Ok(())=>self.enhancement_inflight+=1,
+    Err(std::sync::mpsc::TrySendError::Full(job))=>{self.pending_enhancements.push((1,job));break;}
+    Err(std::sync::mpsc::TrySendError::Disconnected(_))=>{self.pending_enhancements.clear();break;}
+   }
+  }
+ }
  fn receive_enhancements(&mut self)->bool{
   let mut changed=false;
   // Budget uploads to one texture per event loop iteration.
   if let Ok(result)=self.enhancements.try_recv(){
    self.enhancement_done+=1;
+   self.enhancement_inflight=self.enhancement_inflight.saturating_sub(1);
    if result.w==0||result.h==0 {return false;}
    let required=estimated_mip_bytes(result.w,result.h);
    if required>self.enhancement_gpu_budget.saturating_sub(self.enhancement_gpu_used){
@@ -806,6 +813,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   if let Event::AboutToWait=event {
    target.set_control_flow(if viewer.enhancement_done<viewer.enhancement_total{ControlFlow::WaitUntil(Instant::now()+std::time::Duration::from_millis(33))}else{ControlFlow::Wait});
    let upgraded=viewer.receive_enhancements();
+   viewer.dispatch_enhancements();
    let door_moving=viewer.tick_doors();
    if upgraded||door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
   }
