@@ -153,3 +153,7 @@ Important limitations: this is the first experimental decoder for the observed A
 The original ASF file contains 17 binary `light` records with point lists. Some represent a polygon spanning multiple positions, **not** a single emitter centred at the arithmetic mean. The preview now triangulates each recorded list (or draws a small marker for a single point), preserving the recorded coordinates. The prior centroid-based preview could put a floating light in the wrong location.
 
 This is a diagnostic geometry pass. It still does not reproduce the engine's original light texture mapping, corona billboarding, per-light colour/intensity, material flags or complete flash modes. Some recorded polygons can be coplanar with vehicle geometry and hidden by the depth test; source point data should be inspected in console output before assuming a missing light.
+
+## Light-point diagnostic correction
+
+The E4P viewer now shows a small separate marker at **every** parsed light point instead of connecting points into filled red/blue polygons. The light parser also uses a shorter bounded scan and stops at additional prototype section keys to reduce accidentally combining unrelated records. This remains a diagnostic, not confirmed original-game corona rendering; marker positions need validation against source files. The repository update has not been locally compiled.
