@@ -3,6 +3,7 @@
 
 pub mod dds;
 pub mod v3o_text;
+pub mod v3o_packed;
 use serde::Serialize;
 use std::{fs, io, path::Path};
 
@@ -32,10 +33,11 @@ pub fn inspect_bytes(extension: &str, bytes: &[u8]) -> io::Result<Inspection> {
     match extension.to_ascii_lowercase().as_str() {
         "dds" => inspect_dds(bytes),
         "v3o" => {
-            let text = std::str::from_utf8(bytes).ok();
+            let unpacked = v3o_packed::unpack(bytes)?;
+            let text = std::str::from_utf8(&unpacked).ok();
             let printable = text.map(|s| !s.contains('\0') && s.chars().filter(|c| c.is_control() && !c.is_whitespace()).count() < 8).unwrap_or(false);
             let version_hint = text.and_then(|s| s.lines().take(12).find(|l| l.contains("VNUM"))).map(|s| s.trim().chars().take(120).collect());
-            Ok(Inspection::V3o { representation: if printable { "text_candidate" } else { "binary_or_unknown" }.into(), version_hint })
+            Ok(Inspection::V3o { representation: if bytes.starts_with(b"[VNUM=") { "text_v3o" } else if printable { "packed_v3o_zlib" } else { "unrecognized_text" }.into(), version_hint })
         }
         "e4p" => Ok(Inspection::E4p { representation: "opaque_unparsed".into(), bytes: bytes.len() }),
         "e4m" => Ok(Inspection::E4m { representation: "opaque_unparsed".into(), bytes: bytes.len() }),
