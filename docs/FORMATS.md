@@ -14,3 +14,7 @@ Original EM4 V3O geometry is normally packed binary and the game's Editor suppor
 These remain opaque and unparsed.
 
 Source: https://github.com/em4resource/EM4-Modding-Encyclopedia/blob/main/docs/editor-manual-reference.md
+
+## V3O texture-reference research tool
+
+Run `cargo run -p openem4 --bin em4-v3o-textures -- "C:\\path\\to\\unpacked.v3o"` on an unpacked **text** V3O copy. This performs a best-effort scan of DDS/TGA/PNG/BMP references; it does **not** decode packed meshes or validate the complete V3O grammar. The scanner rejects binary text and unsafe paths and does not alter files. Original editor unpack operations overwrite their targets; work only on copies.
