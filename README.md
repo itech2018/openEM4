@@ -195,3 +195,7 @@ Relative `mod:` model and child-prototype references resolve against the selecte
 ## Mod vehicle material compatibility
 
 The V3O/E4P viewer now resolves texture references relative to the source V3O first, and supports `mod:` texture paths via the selected mod's root followed by the base-game `Data` fallback. This also applies to vehicle child models (wheels and doors), whose texture paths can be absolute after E4P assembly. Missing textures remain visible as checkerboard fallback and report the missing reference in the console. Unused `Depth.texture` and `Viewer.index_count` warnings have been addressed; the depth texture is still retained for GPU resource lifetime. The changes are source-level and need verification with London Mod assets.
+
+## Door motion preview (experimental)
+
+Press **D** in `em4-view` to toggle a simple open/closed pose for child attachments classified as doors by the E4P assembly parser. The viewer keeps a copy of the closed vertex buffer, then rotates door-only vertices and normals around their decoded E4P child anchor. No source assets are modified. This is **not** yet authentic Emergency 4 door animation: hinge axis and 65-degree opening angle are provisional, child hierarchy/hinge definitions and multiple door controls remain to be reverse-engineered, and it does not update collision or gameplay. If no door child is decoded, D has no visual effect. The code has not been independently built or visually tested.
