@@ -36,12 +36,13 @@ fn shade(normal: vec3<f32>) -> f32 {
 }
 
 @fragment fn fs_emissive(v: VOut) -> @location(0) vec4<f32> {
- let category = u32(floor(v.uv.x / 2.0));
- let u = fract(v.uv.x / 2.0) * 2.0;
- let d = length(vec2<f32>(u,v.uv.y)-vec2<f32>(0.5));
- let alpha = pow(max(0.0,1.0-smoothstep(0.05,0.5,d)),1.5);
- let colour = select(vec3<f32>(1.0,0.06,0.04),vec3<f32>(0.06,0.25,1.0),category==1u);
- let colour2 = select(colour,vec3<f32>(1.0,1.0,0.85),category==2u);
- let colour3 = select(colour2,vec3<f32>(1.0,0.53,0.03),category==3u);
- return vec4<f32>(colour3,alpha);
+ let category=u32(floor(v.uv.x/2.0));
+ let u=fract(v.uv.x/2.0)*2.0;
+ let corona=textureSample(color_texture,color_sampler,vec2<f32>(u,v.uv.y));
+ // Legacy corona TGA may already be coloured. Tint primarily its luminance/alpha.
+ let tint=select(vec3<f32>(1.0,0.09,0.08),vec3<f32>(0.1,0.35,1.0),category==1u);
+ let tint2=select(tint,vec3<f32>(1.0,1.0,0.9),category==2u);
+ let tint3=select(tint2,vec3<f32>(1.0,0.62,0.1),category==3u);
+ let rgb=mix(tint3,corona.rgb,0.65);
+ return vec4<f32>(rgb,corona.a);
 }
