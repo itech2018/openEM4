@@ -215,3 +215,7 @@ The E4P assembly decoder now recognises `Door` records with `AxisX`, `AxisY`, `A
 ## Ramp hinge and side-door regression correction
 
 The E4P viewer now distinguishes **central horizontal-axis equipment** (such as the ASF's recovery ramp) from **off-centre vehicle side doors**. For horizontal equipment near the body's lateral centreline, it uses the E4P child's placement origin as the provisional rotation pivot and the native rotation axis and angle. Ordinary side doors instead keep the previously user-verified geometry hinge and ±65° swing, preventing the London Mod Astra regression introduced when native axes were applied to every door. The classification uses attachment position and body width and remains a heuristic; print `J` diagnostics and visually validate each vehicle. This does not yet decode an explicit native hinge point.
+
+## Mod side-door regression safeguard
+
+After native E4P axes were enabled, the London Mod Astra could rotate door parts across its windscreen. The viewer now **defaults to the last verified geometry-based side-door animation for installed mods**. The base-game ASF keeps its native horizontal ramp mode. To experiment with native equipment axes in a mod, pass `--native-mod-door-axes` after the E4P filename; this flag is for diagnostics and not the recommended default. The viewer prints the chosen pivot, axis and mode. Actual per-prototype door hinge metadata still requires research; avoid applying generic native-axis assumptions to all modded car doors.
