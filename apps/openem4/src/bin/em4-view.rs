@@ -145,6 +145,14 @@ impl Viewer {
   let adapter=instance.request_adapter(&wgpu::RequestAdapterOptions{
    power_preference:wgpu::PowerPreference::HighPerformance,compatible_surface:Some(&surface),force_fallback_adapter:false
   }).await.ok_or("No compatible GPU adapter")?;
+  // Adapter class is only a conservative memory proxy, not VRAM detection.
+  let enhancement_budget_mib=match adapter.get_info().device_type{
+   wgpu::DeviceType::DiscreteGpu=>256u64,
+   wgpu::DeviceType::IntegratedGpu=>96,
+   wgpu::DeviceType::VirtualGpu|wgpu::DeviceType::Cpu=>64,
+   _=>128,
+  };
+  println!("Automatic enhanced-texture budget: {} MiB (adapter class heuristic)",enhancement_budget_mib);
   let (device,queue)=adapter.request_device(&wgpu::DeviceDescriptor{
    label:Some("V3O viewer"),required_features:wgpu::Features::empty(),required_limits:wgpu::Limits::default()
   },None).await.map_err(|e|e.to_string())?;
@@ -379,7 +387,7 @@ impl Viewer {
   let depth=depth(&device,config.width,config.height);
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:256*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -857,6 +865,9 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
  let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=off"){0}
  else if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
+ if upscale_factor!=0 {
+  if let Err(e)=texture_upscale::prune_cache(){eprintln!("Texture cache pruning skipped: {e}");}
+ }
  println!("Texture enhancement: {}",match upscale_factor{0=>"disabled (original textures)",4=>"forced 4x Lanczos3 + sharpen25",_=>"automatic (conservative 2x/4x + external cache)"});
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
