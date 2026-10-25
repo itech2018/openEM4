@@ -228,7 +228,26 @@ impl Viewer {
    if count>0.0 {for x in &mut center{*x/=count;}}
    draws.push((ranges[i].clone(),group,material_kind,center));
   }
-  staged_jobs.sort_by(|a,b|b.0.cmp(&a.0));
+  // Rank pending textures against the initial camera view rather than V3O
+  // file order. Each shared job uses the best visible associated surface.
+  let (sy,cy)=camera.yaw.sin_cos();let (sp,cp)=camera.pitch.sin_cos();
+  let eye=[camera.target[0]+camera.distance*cp*sy,
+           camera.target[1]+camera.distance*sp,
+           camera.target[2]+camera.distance*cp*cy];
+  let forward=normalize(sub(camera.target,eye));
+  let priority=|triangle_count:usize,job:&EnhancementJob|->f32 {
+   let indices=job.indices.lock().map(|group|group.clone()).unwrap_or_default();
+   let coverage=indices.iter().filter_map(|&i|draws.get(i)).map(|d|{
+    let toward=sub(d.3,eye);
+    let distance2=dot(toward,toward).max(1.0);
+    let facing=dot(normalize(toward),forward);
+    // Points outside the forward hemisphere get no visibility bonus.
+    let visibility=((facing-0.15)/0.85).clamp(0.0,1.0);
+    (0.2+0.8*visibility)/distance2.sqrt()
+   }).fold(0.0_f32,f32::max);
+   triangle_count.max(1) as f32 * coverage
+  };
+  staged_jobs.sort_by(|a,b|priority(b.0,&b.1).total_cmp(&priority(a.0,&a.1)));
   let staged_count=staged_jobs.len();
   for (_,job,_) in staged_jobs {
    if job_tx.try_send(job).is_ok(){enhancement_total+=1;}
@@ -236,7 +255,7 @@ impl Viewer {
   }
   drop(job_tx);
   drop(enhance_tx);
-  println!("Enhancement jobs queued: {}/{} prioritized by surface triangle coverage ({} duplicates joined)",enhancement_total,staged_count,duplicate_count);
+  println!("Enhancement jobs queued: {}/{} prioritized by initial camera-facing coverage ({} duplicates joined)",enhancement_total,staged_count,duplicate_count);
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
