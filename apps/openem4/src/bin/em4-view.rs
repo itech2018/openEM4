@@ -204,17 +204,16 @@ impl Viewer {
     else if tex.contains("yellow"){3}else{2};
    let id=match kind{0=>0.1,1=>0.3,2=>0.5,_=>0.8};
    let start=mi.len() as u32;
-   // Diagnostic mode: each decoded source point gets its own small marker.
-   // Never connect unrelated points into a potentially enormous filled polygon.
-   for point in &light.points {
-    let p=[point[0],point[2],-point[1]];
-    let base=mv.len() as u32;
-    for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
-     mv.push(Vertex{pos:[p[0]+dx*radius,p[1],p[2]+dz*radius],
-      normal:[0.0,1.0,0.0],uv:[id,0.0]});
-    }
-    mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
+   // The original 'offset' field anchors the light. Its 'points' are
+   // local polygon geometry and MUST NOT be treated as world-space positions.
+   let point=&light.position;
+   let p=[point[0],point[2],-point[1]];
+   let base=mv.len() as u32;
+   for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
+    mv.push(Vertex{pos:[p[0]+dx*radius,p[1],p[2]+dz*radius],
+     normal:[0.0,1.0,0.0],uv:[id,0.0]});
    }
+   mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
    let end=mi.len() as u32;
    if end>start{light_markers.push((start..end,kind,light.flash_frequency,light.flash_offset));}
   }
@@ -482,7 +481,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let light_defs=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
  em4_formats::e4p_lights::parse(&fs::read(&path)?)
 }else{Vec::new()};
- for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: pos={:?} corona={} type={} frequency={} offset={}",l.position,l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
+ for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
  let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
