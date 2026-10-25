@@ -56,3 +56,15 @@ UV direction and scale are still experimental pending comparison with the origin
 ## Viewer orientation and normal debug
 
 The viewer now converts V3O positions and normals from an assumed EM4 Z-up axis layout into the Y-up rendering convention (`x, z, -y`). Test against several models to verify handedness and orientation. **W** switches between textured output and normal-vector visualization; **R** resets the camera. Existing orbit/pan/zoom controls remain unchanged. This is a normals diagnostic, not a true wireframe rasterization mode. Alpha blending is still basic and transparent meshes may display sorting artifacts.
+
+## Viewer and prototype research update
+
+The V3O viewer now uses directional plus ambient lighting and a flat ground reference just below the model. Press **G** to toggle the ground; **W** visualises normals; **R** resets the camera. Shadows and advanced transparency sorting are not implemented yet.
+
+To inspect an E4P prototype without changing the source:
+
+```powershell
+cargo run -p openem4 --bin em4-e4p-inspect -- "C:\\path\\to\\vehicle.e4p"
+```
+
+This research CLI checks whether the file is readable text and lists candidate V3O/E4P path references. It does not yet parse binary prototypes, wheel placement, commands, or vehicle hierarchy. Do not assume it can reconstruct the full vehicle.
