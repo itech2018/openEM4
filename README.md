@@ -133,3 +133,7 @@ This update has not been independently compiled or visually validated.
 ## Lighting and material diagnostics
 
 Vehicle materials now use a directional key light, subtle opposite-side fill and hemispherical ambient illumination. The viewer also logs per-surface texture path, dimensions, material class and minimum/maximum alpha values. Use those logs to diagnose missing wheel textures or unexpectedly transparent materials. This change does not modify original DDS assets. It is not physically based rendering, and original Emergency 4 material flags still require decoding. Build and appearance must be verified locally.
+
+## Experimental vehicle light controls
+
+The V3O/E4P viewer now has a **light state and timing foundation**: H toggles headlights, B toggles brake lights, L and K toggle left/right indicators, and E toggles emergency beacon state. A timer computes indicator and beacon blink phases, and the viewer redraws while timed states are active. These are diagnostic control states only: **no light meshes, emissive surface selection, beams, colored flashing points, or authentic E4P lighting data have been implemented yet**. Console messages confirm toggles. Vehicle geometry and its original textures remain unchanged.
