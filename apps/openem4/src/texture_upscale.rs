@@ -9,20 +9,42 @@ pub fn cache_dir()->Option<PathBuf>{
  #[cfg(not(windows))]
  let base=env::var_os("XDG_CACHE_HOME").map(PathBuf::from)
   .or_else(||env::var_os("HOME").map(|h|PathBuf::from(h).join(".cache")));
- base.map(|p|p.join("openEM4").join("textures").join("lanczos3-sharp25-v2"))
+ base.map(|p|p.join("openEM4").join("textures").join("automatic-v3"))
 }
+
+/// Deterministic, conservative enhancement policy. No per-mod tuning required.
+pub fn automatic_factor(name:&str,w:u32,h:u32,pixels:&[u8])->u32{
+ if w==0||h==0||w>2048||h>2048||pixels.len()!=w as usize*h as usize*4{return 1}
+ let name=name.to_ascii_lowercase();
+ if ["normal","_n.","_nm.","rough","specular","gloss","metal","corona","lightmap","height","bump"].iter().any(|tag|name.contains(tag)){return 1}
+ // Preserve alpha-heavy sprites, icons and glass; don't smear cutout edges.
+ let alpha_pixels=pixels.chunks_exact(4).filter(|p|p[3]<240).count();
+ if alpha_pixels>pixels.len()/4/5{return 1}
+ if w.max(h)>=1024{return 1}
+ if w.max(h)<=512{4}else{2}
+}
+/// Automatic enhancement, with content-addressed reuse and original-size fallback.
+pub fn enhance_auto(name:&str,w:u32,h:u32,pixels:Vec<u8>)->(u32,u32,Vec<u8>){
+ let factor=automatic_factor(name,w,h,&pixels);
+ if factor==1{return(w,h,pixels)}
+ upscale_with_factor(w,h,pixels,factor)
+}
+
 pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
- if factor!=4||w==0||h==0{return (w,h,pixels);}
- let Some(tw)=w.checked_mul(4) else{return(w,h,pixels)};
- let Some(th)=h.checked_mul(4) else{return(w,h,pixels)};
+ upscale_with_factor(w,h,pixels,factor)
+}
+fn upscale_with_factor(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
+ if (factor!=2&&factor!=4)||w==0||h==0{return (w,h,pixels);}
+ let Some(tw)=w.checked_mul(factor) else{return(w,h,pixels)};
+ let Some(th)=h.checked_mul(factor) else{return(w,h,pixels)};
  // Keep textures bounded; 8192x8192 RGBA is 256 MiB per texture.
  if tw>8192||th>8192||(tw as u64)*(th as u64)>16_777_216 {
-  eprintln!("4x texture skipped: {}x{} exceeds 64 MiB decoded limit",tw,th);
+  eprintln!("Texture enhancement skipped: {}x{} exceeds 64 MiB decoded limit",tw,th);
   return(w,h,pixels)
  }
  let Some(source)=RgbaImage::from_raw(w,h,pixels.clone())else{return(w,h,pixels)};
  let mut hasher=blake3::Hasher::new();
- hasher.update(b"openem4-lanczos3-sharpen25-v2-4x");
+ hasher.update(b"openem4-lanczos3-sharpen25-auto-v3");hasher.update(&factor.to_le_bytes());
  hasher.update(&w.to_le_bytes());hasher.update(&h.to_le_bytes());hasher.update(&pixels);
  let name=format!("{}.png",hasher.finalize().to_hex());
  let cache=cache_dir().map(|p|p.join(name));
@@ -30,7 +52,7 @@ pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
   if let Ok(image)=image::open(path){
    let rgba=image.to_rgba8();
    if rgba.dimensions()==(tw,th){
-    println!("4x texture cache hit: {}",path.display());
+    println!("Texture cache hit: {}",path.display());
     return(tw,th,rgba.into_raw());
    }
   }
@@ -53,12 +75,23 @@ pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
    }
   }
  }
- println!("4x Lanczos3 + 25% sharpening generated: {}x{} -> {}x{}",w,h,tw,th);
+ println!("Automatic Lanczos3 + 25% sharpening generated: {}x{} -> {}x{}",w,h,tw,th);
  (tw,th,enhanced.into_raw())
 }
 #[cfg(test)]
 mod tests {
  use super::*;
+ #[test]fn auto_skips_data_and_transparency(){
+  let rgba=vec![255u8;64*64*4];
+  assert_eq!(automatic_factor("car_normal.dds",64,64,&rgba),1);
+  assert_eq!(automatic_factor("car_diffuse.dds",64,64,&rgba),4);
+  let mut transparent=rgba.clone();
+  for p in transparent.chunks_exact_mut(4){p[3]=0;}
+  assert_eq!(automatic_factor("window.dds",64,64,&transparent),1);
+ }
+ #[test]fn auto_respects_large_source(){
+  assert_eq!(automatic_factor("large.dds",1024,1024,&vec![255;1024*1024*4]),1);
+ }
  #[test]fn no_scaling_by_default(){assert_eq!(upscale(1,1,vec![3,4,5,6],1),(1,1,vec![3,4,5,6]));}
  #[test]fn fourfold_dimensions(){let (w,h,p)=upscale(2,2,vec![255;16],4);assert_eq!((w,h,p.len()),(8,8,256));}
  #[test]fn preserves_alpha_values_at_corners(){
