@@ -260,16 +260,90 @@ fn load_surface_image(model_path:&Path,filename:&str)->(u32,u32,Vec<u8>){
   Err(e)=>{eprintln!("Texture unsupported {filename}: {e}");fallback()}}
 }
 
+
+fn data_root(path:&Path)->Result<std::path::PathBuf,String>{
+ path.ancestors().find(|p|p.file_name().map(|n|n.to_string_lossy().eq_ignore_ascii_case("Data")).unwrap_or(false))
+ .map(|p|p.to_path_buf()).ok_or("E4P must be within an Emergency 4 Data directory".into())
+}
+fn resolve_game_ref(root:&Path,reference:&str)->Option<std::path::PathBuf>{
+ let reference=reference.strip_prefix("mod:").unwrap_or(reference).trim_start_matches('/');
+ let relative=reference.replace('\\',"/");
+ if relative.is_empty()||relative.contains(':'){return None;}
+ let mut current=root.to_path_buf();
+ for component in relative.split('/'){
+  if component.is_empty()||component=="."{continue;}
+  if component==".."{return None;}
+  current=std::fs::read_dir(&current).ok()?.flatten().find(|e|
+   e.file_name().to_string_lossy().eq_ignore_ascii_case(component))?.path();
+ }
+ if current.is_file() && current.canonicalize().ok()?.starts_with(root.canonicalize().ok()?){Some(current)}else{None}
+}
+fn append_model(target:&mut em4_formats::v3o_mesh::Mesh,source:em4_formats::v3o_mesh::Mesh,
+ attachment:Option<&em4_formats::e4p_assembly::Attachment>){
+ let vertex_start=target.vertices.len() as u32;
+ let surface_start=target.surfaces.len();
+ let mut verts=source.vertices;
+ if let Some(a)=attachment {
+  for v in &mut verts {
+   let p=v.position;let r=&a.rotation;
+   // E4P translations are stored in centimetre-scale game coordinates.
+   v.position=[
+    r[0]*p[0]+r[1]*p[1]+r[2]*p[2]+a.position[0]/100.0,
+    r[3]*p[0]+r[4]*p[1]+r[5]*p[2]+a.position[1]/100.0,
+    r[6]*p[0]+r[7]*p[1]+r[8]*p[2]+a.position[2]/100.0,
+   ];
+   let n=v.normal;
+   v.normal=[r[0]*n[0]+r[1]*n[1]+r[2]*n[2],
+    r[3]*n[0]+r[4]*n[1]+r[5]*n[2],
+    r[6]*n[0]+r[7]*n[1]+r[8]*n[2]];
+  }
+ }
+ target.vertices.extend(verts);
+ target.surfaces.extend(source.surfaces);
+ for mut t in source.triangles{
+  for i in &mut t.indices{*i+=vertex_start;}
+  t.surface_index+=surface_start;
+  target.triangles.push(t);
+ }
+}
+fn load_vehicle(path:&Path)->Result<(em4_formats::v3o_mesh::Mesh,std::path::PathBuf),Box<dyn std::error::Error>>{
+ let root=data_root(path)?;
+ let prototype=em4_formats::e4p_assembly::parse_file(path)?;
+ let body=prototype.body_model.ok_or("E4P does not contain a readable body ModelName")?;
+ let body_path=resolve_game_ref(&root,&body).ok_or("Main V3O model reference cannot be located in Data")?;
+ let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(&body_path)?)?;
+ let mut loaded=0usize;
+ for child in &prototype.attachments {
+  let Some(p)=resolve_game_ref(&root,&child.prototype)else{
+   eprintln!("Missing child prototype: {}",child.prototype);continue;
+  };
+  let Ok(desc)=em4_formats::e4p_assembly::parse_file(&p)else{
+   eprintln!("Cannot read child prototype: {}",p.display());continue;
+  };
+  let Some(model_ref)=desc.body_model else{eprintln!("No child V3O for {}",p.display());continue};
+  let Some(model_path)=resolve_game_ref(&root,&model_ref)else{
+   eprintln!("Missing child model: {model_ref}");continue;
+  };
+  match em4_formats::v3o_mesh::parse(&fs::read(&model_path)?) {
+   Ok(part)=>{append_model(&mut mesh,part,Some(child));loaded+=1;},
+   Err(err)=>eprintln!("Child model failed {}: {err}",model_path.display()),
+  }
+ }
+ println!("Resolved {} of {} child attachment(s)",loaded,prototype.attachments.len());
+ Ok((mesh,body_path))
+}
+
 fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
- let bytes=fs::read(&path)?;
- let mesh=em4_formats::v3o_mesh::parse(&bytes)?;
+ let (mesh,body_path)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+  load_vehicle(&path)?
+ }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone())};
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
   .with_inner_size(winit::dpi::LogicalSize::new(1200.0,800.0)).build(&event_loop)?);
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&path))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::WindowEvent{window_id,event}=event {
