@@ -297,3 +297,13 @@ The viewer now supports `--instances=N` for **standalone V3O models**, with N fr
 Example: `cargo run -p openem4 --bin em4-view -- "C:\\path\\to\\model.v3o" --instances=4`
 
 E4P prototypes continue operating as before with doors, ASF attachments and emergency lights. Instance preview is deliberately rejected for E4P to prevent duplicating attached parts without corresponding animation metadata. Scene assembly is bounded to 16 instances and 2 million vertices/triangles. The implementation has not been independently compiled on Windows.
+
+## Mixed-model V3O scene preview
+
+To inspect multiple **different** V3O meshes together, pass additional models with `--add-v3o=<full path>`. Example (PowerShell):
+
+```powershell
+cargo run -p openem4 --bin em4-view -- "C:\path\to\vehicle.v3o" "--add-v3o=C:\path\to\building.v3o"
+```
+
+The preview supports up to 16 independently loaded standalone V3O models, places them side by side, remaps vertex indices and surface indices, and resolves each model's texture references against its own original path. The renderer's shared material registry then reuses GPU resources when different models contain identical decoded textures. `--instances=N` remains available for repeated copies of *one* V3O and cannot currently be combined with `--add-v3o`. E4P vehicles cannot yet be merged into mixed scenes because doors, attachments and lighting need independent object-level state. The feature is a combined-mesh **preview**, not yet independent per-object transforms, physics or game-world rendering. Windows compilation and visual confirmation remain outstanding.
