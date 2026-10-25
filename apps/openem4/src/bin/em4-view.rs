@@ -2,6 +2,8 @@
 //! Left mouse: orbit; right mouse: pan; wheel: zoom; R: reset.
 #[path = "../texture_upscale.rs"]
 mod texture_upscale;
+#[path = "../material_registry.rs"]
+mod material_registry;
 use std::{env, fs, mem, path::Path, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -200,9 +202,7 @@ impl Viewer {
   let mut duplicate_count=0usize;
   let mut pending_keys=std::collections::HashMap::<blake3::Hash,std::sync::Arc<std::sync::Mutex<Vec<usize>>>>::new();
   let mut draws=Vec::new();
-  let mut baseline_texture_bytes=0u64;
-  let mut shared_originals=std::collections::HashMap::<blake3::Hash,Arc<wgpu::BindGroup>>::new();
-  let mut reused_originals=0usize;
+  let mut material_registry=material_registry::MaterialRegistry::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
    if upscale_factor!=0{
@@ -233,23 +233,8 @@ impl Viewer {
    let binary_alpha=alpha.iter().all(|&a|a<24||a>231);
    let material_kind=if !has_alpha{0u8}else if binary_alpha{1u8}else{2u8};
    println!("Material {} {} texture={} mode={} size={}x{} alpha={}..{}",i,surface.name,surface.texture,match material_kind{0=>"opaque",1=>"cutout",_=>"blended"},w,h,min_alpha,max_alpha);
-   // Decode-content identity, independent of mod filename, allows different
-   // vehicle surfaces (and future scene objects) to share one GPU upload.
-   let mut fingerprint=blake3::Hasher::new();
-   fingerprint.update(b"openem4-rgba8-srgb-material-v1");
-   fingerprint.update(&w.to_le_bytes());
-   fingerprint.update(&h.to_le_bytes());
-   fingerprint.update(&pixels);
-   let key=fingerprint.finalize();
-   let group=if let Some(existing)=shared_originals.get(&key){
-    reused_originals+=1;
-    existing.clone()
-   }else{
-    let created=Arc::new(material_group(&device,&queue,&material_layout,&sampler,w,h,pixels)?);
-    baseline_texture_bytes=baseline_texture_bytes.saturating_add(estimated_mip_bytes(w,h));
-    shared_originals.insert(key,created.clone());
-    created
-   };
+   let group=material_registry.get_or_upload(w,h,pixels,|w,h,pixels|
+    material_group(&device,&queue,&material_layout,&sampler,w,h,pixels))?;
    let mut center=[0.0f32;3];let mut count=0f32;
    for t in mesh.triangles.iter().filter(|t|t.surface_index==i){
     for &v in &t.indices {let p=vertices[v as usize].pos;for axis in 0..3{center[axis]+=p[axis];}count+=1.0;}
@@ -404,7 +389,8 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&ground_view)},
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
-  println!("Base unique textures: {} GPU uploads, {} surfaces reused; ~{} MiB estimate; enhancement allowance {} MiB",shared_originals.len(),reused_originals,baseline_texture_bytes/1048576,enhancement_budget_mib);
+  let baseline_texture_bytes=material_registry.estimated_bytes();
+  println!("Base unique textures: {} GPU uploads, {} surfaces reused; ~{} MiB estimate; enhancement allowance {} MiB",material_registry.unique_count(),material_registry.reused_count(),baseline_texture_bytes/1048576,enhancement_budget_mib);
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
    draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
