@@ -66,7 +66,7 @@ fn depth(device:&wgpu::Device,w:u32,h:u32)->Depth {
 }
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
- pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup)>,
+ pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,bool)>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
@@ -128,6 +128,7 @@ impl Viewer {
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
+   let transparent=pixels.chunks_exact(4).any(|pixel|pixel[3]<250);
    let levels = 32 - w.max(h).leading_zeros();
    let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O material"),
     size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:levels,sample_count:1,
@@ -147,23 +148,28 @@ impl Viewer {
    let group=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("V3O surface bind"),layout:&material_layout,
     entries:&[wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
      wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
-   draws.push((ranges[i].clone(),group));
+   draws.push((ranges[i].clone(),group,transparent));
   }
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
    label:None,bind_group_layouts:&[&layout,&material_layout],push_constant_ranges:&[]});
-  let pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
-   label:Some("V3O model pipeline"),layout:Some(&pipeline_layout),
+  let make_pipeline=|transparent:bool|device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
+   label:Some(if transparent{"V3O transparent pipeline"}else{"V3O opaque pipeline"}),
+   layout:Some(&pipeline_layout),
    vertex:wgpu::VertexState{module:&shader,entry_point:"vs_main",buffers:&[Vertex::desc()],compilation_options:Default::default()},
    fragment:Some(wgpu::FragmentState{module:&shader,entry_point:"fs_main",
-    targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})],
+    targets:&[Some(wgpu::ColorTargetState{format,blend:if transparent{Some(wgpu::BlendState::ALPHA_BLENDING)}else{None},
+     write_mask:wgpu::ColorWrites::ALL})],
     compilation_options:Default::default()}),
    primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
    depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth24Plus,
-    depth_write_enabled:true,depth_compare:wgpu::CompareFunction::Less,stencil:Default::default(),bias:Default::default()}),
+    depth_write_enabled:!transparent,depth_compare:wgpu::CompareFunction::Less,
+    stencil:Default::default(),bias:Default::default()}),
    multisample:Default::default(),multiview:None
   });
+  let pipeline=make_pipeline(false);
+  let transparent_pipeline=make_pipeline(true);
   let vertex_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX});
   let index_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
@@ -194,7 +200,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&ground_view)},
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
-  Ok(Self{surface,device,queue,config,pipeline,vertices:vertex_buffer,indices:index_buffer,
+  Ok(Self{surface,device,queue,config,pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
    index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true})
  }
  fn resize(&mut self,w:u32,h:u32){
@@ -224,7 +230,19 @@ impl Viewer {
     pass.draw_indexed(0..6,0,0..1);
    }
    pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
-   for (range,material) in &self.draws {pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);}
+   // Opaque surfaces first; transparent surfaces preserve the existing depth buffer.
+   pass.set_pipeline(&self.pipeline);
+   for (range,material,is_transparent) in &self.draws {
+    if *is_transparent {continue;}
+    pass.set_bind_group(1,material,&[]);
+    pass.draw_indexed(range.clone(),0,0..1);
+   }
+   pass.set_pipeline(&self.transparent_pipeline);
+   for (range,material,is_transparent) in &self.draws {
+    if !*is_transparent {continue;}
+    pass.set_bind_group(1,material,&[]);
+    pass.draw_indexed(range.clone(),0,0..1);
+   }
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
