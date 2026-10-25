@@ -161,3 +161,7 @@ The E4P viewer now shows a small separate marker at **every** parsed light point
 ## E4P light anchor correction
 
 The ASF binary E4P stores a separate `offset` vector (UTF-16 string such as `163, -47, 30`) in each light record. Previous diagnostics incorrectly used `points` as model-space locations, producing distant floating markers. The decoder now extracts the offset into `Light.position` and the viewer renders one marker at that anchor, preserving local polygon points for later corona/area-light geometry decoding. Light entries with no valid offset are not rendered. Full E4P hierarchy transforms, corona visuals and behaviour are not yet validated. Original assets remain read-only.
+
+## Camera-facing, scaled corona previews
+
+The E4P light preview now uses each decoded `offset` anchor with the corresponding `coronasize` (bounded for safety), rather than a fixed-size square. Preview coronas rotate to face the camera and use a soft radial alpha gradient and alpha blending. The existing E4P flash frequency/offset logic and E/H/B/L/K controls remain. This is **procedural corona rendering**, not yet sampling the game's actual `coronatex` TGA texture. Real corona texture loading, light-type mapping, correct per-light orientation and bloom remain future work. Original Emergency 4 files are never modified.
