@@ -18,3 +18,6 @@ Source: https://github.com/em4resource/EM4-Modding-Encyclopedia/blob/main/docs/e
 ## V3O texture-reference research tool
 
 Run `cargo run -p openem4 --bin em4-v3o-textures -- "C:\\path\\to\\unpacked.v3o"` on an unpacked **text** V3O copy. This performs a best-effort scan of DDS/TGA/PNG/BMP references; it does **not** decode packed meshes or validate the complete V3O grammar. The scanner rejects binary text and unsafe paths and does not alter files. Original editor unpack operations overwrite their targets; work only on copies.
+
+## Packed V3O (working parser)
+The original sample `asf.V3O` has little-endian magic `0x1337C0D3`, pack-version `1`, a decompressed byte length at offset 8 and zlib data beginning at offset 20. The new `v3o_packed::unpack()` decodes the file in memory, bounds the output to 64 MiB, verifies declared length and checks the `[VNUM=` marker. The original file remains untouched. The same `em4-v3o-textures` command now accepts supported packed models. Geometry parsing and GPU rendering remain future tasks. No user-supplied game asset is committed.
