@@ -643,7 +643,11 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      let wide_equipment=lateral_span>body_half_width*1.20;
      let native_axis=child.door_axis.map(|a|[a[0],a[2],-a[1]]);
      let horizontal=native_axis.is_some_and(|a|a[1].abs()<0.5);
-     let use_native=horizontal&&wide_equipment&&child.open_angle.is_some();
+     let is_mod=root.parent().and_then(|p|p.file_name()).is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case("Mods"));
+     // Mod door parameters differ across authors. Keep native equipment axes
+     // opt-in for mods until their hinge semantics are individually verified.
+     let allow_native=!is_mod || env::args_os().any(|arg|arg=="--native-mod-door-axes");
+     let use_native=allow_native&&horizontal&&wide_equipment&&child.open_angle.is_some();
      let direction=if door_side>=0.0{1.0}else{-1.0};
      let pivot_x=if front_door{max[0]}else{min[0]};
      let fallback_pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
