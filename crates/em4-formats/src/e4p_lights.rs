@@ -25,6 +25,16 @@ fn value(b:&[u8],end:usize)->Option<(u32,usize)>{
   _=>None
  }
 }
+
+/// A provisional visualisation of each individual E4P light's flash frequency
+/// and phase. Exact original-game time units are not yet verified.
+/// Invalid or non-positive frequencies mean an always-on light.
+pub fn preview_flash_on(seconds:f32,frequency:f32,offset:f32)->bool{
+ if !seconds.is_finite()||!frequency.is_finite()||frequency<=0.0{return true}
+ let phase=if offset.is_finite(){offset}else{0.0};
+ (seconds*frequency.min(20.0)+phase).rem_euclid(1.0)<0.5
+}
+
 pub fn parse(bytes:&[u8])->Vec<Light>{
  let mut out=Vec::new();let mut at=0;
  while at+12<bytes.len(){
@@ -78,4 +88,14 @@ pub fn parse(bytes:&[u8])->Vec<Light>{
 #[cfg(test)] mod tests{
  use super::*;
  #[test] fn ignores_empty(){assert!(parse(b"not an E4P").is_empty());}
+ #[test] fn flash_phase_is_per_light(){
+  assert!(preview_flash_on(0.0,2.0,0.0));
+  assert!(!preview_flash_on(0.0,2.0,0.5));
+  assert!(!preview_flash_on(0.3,1.0,0.5));
+  assert!(preview_flash_on(12.0,0.0,0.9));
+ }
+ #[test] fn flash_handles_invalid_values(){
+  assert!(preview_flash_on(0.0,f32::NAN,0.0));
+  assert!(preview_flash_on(0.0,-1.0,0.0));
+ }
 }
