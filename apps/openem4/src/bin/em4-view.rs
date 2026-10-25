@@ -1,6 +1,6 @@
 //! Standalone prototype 3D V3O viewer. Geometry is shaded without textures.
 //! Left mouse: orbit; right mouse: pan; wheel: zoom; R: reset.
-#[path = "texture_upscale.rs"]
+#[path = "../texture_upscale.rs"]
 mod texture_upscale;
 use std::{env, fs, mem, path::Path, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
