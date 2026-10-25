@@ -21,3 +21,9 @@ Run `cargo run -p openem4 --bin em4-v3o-textures -- "C:\\path\\to\\unpacked.v3o"
 
 ## Packed V3O (working parser)
 The original sample `asf.V3O` has little-endian magic `0x1337C0D3`, pack-version `1`, a decompressed byte length at offset 8 and zlib data beginning at offset 20. The new `v3o_packed::unpack()` decodes the file in memory, bounds the output to 64 MiB, verifies declared length and checks the `[VNUM=` marker. The original file remains untouched. The same `em4-v3o-textures` command now accepts supported packed models. Geometry parsing and GPU rendering remain future tasks. No user-supplied game asset is committed.
+
+## V3O geometry parsing (experimental)
+Use `cargo run -p openem4 --bin em4-v3o-mesh -- "C:\\path\\model.V3O"`.
+The verified uploaded `asf.V3O` uses `D` rows for vertices, `P` rows for polygons, `SRF` rows for surfaces, and 1-based vertex and surface indices. Its record headers report 1360 vertices, 792 triangles and 2 surfaces.
+The parser validates record counts and indices, converts coordinates to provisional metres (integer / 100), normals (integer / 256) and UVs (integer / 1024). These scales need visual confirmation on varied models. Packed original game files are unpacked in memory automatically; no game assets are checked into Git.
+**Not yet included:** GPU model display, final materials, nontriangular faces, animated meshes and production format coverage.
