@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::{fs,io::{self,ErrorKind},path::Path};
 #[derive(Debug,Clone,Serialize)]
 pub struct Attachment {
- pub prototype:String,pub position:[f32;3],pub rotation:[f32;9],pub category:String
+ pub prototype:String,pub position:[f32;3],pub rotation:[f32;9],pub category:String,pub door_axis:Option<[f32;3]>,pub open_angle:Option<f32>
 }
 #[derive(Debug,Serialize)]
 pub struct Assembly {
@@ -38,7 +38,7 @@ fn scan(bytes:&[u8])->Vec<(usize,String,usize)>{
  while at+8<=bytes.len(){
   if let Some((name,end))=word(bytes,at){
    // only recognize known keys, so other bytes are not interpreted as values
-   if matches!(name.as_str(),"ModelName"|"Filename"|"PosX"|"PosY"|"PosZ"|"Rotation"|"Child"|"VehicleWheel"|"Doors"|"Wheels"){
+   if matches!(name.as_str(),"ModelName"|"Filename"|"PosX"|"PosY"|"PosZ"|"Rotation"|"Child"|"VehicleWheel"|"Doors"|"Wheels"|"Door"|"AxisX"|"AxisY"|"AxisZ"|"OpenAngle"){
     result.push((at,name,end));at=end;continue;
    }
   }
@@ -77,10 +77,33 @@ pub fn parse(bytes:&[u8])->io::Result<Assembly>{
   if pos.iter().any(|p|p.is_none()) {continue;}
   let category=if filename.to_ascii_lowercase().contains("wheel"){"wheel"}
    else if filename.to_ascii_lowercase().contains("door"){"door"}else{"child"};
+  let mut door_axis=None;let mut open_angle=None;
+  if category=="door" {
+   if let Some(j)=(0..i).rev().find(|&j|tokens[j].1=="Door") {
+    let intervening=tokens[j+1..i].iter().any(|(_,key,_)|
+      matches!(key.as_str(),"Filename"|"VehicleWheel"|"Wheels"|"Child"|"ModelName"));
+    if !intervening && tokens[i].0.saturating_sub(tokens[j].0)<2048 {
+     let mut axis=[None;3];
+     for (_,key,end) in &tokens[j+1..i] {
+      match key.as_str(){
+       "AxisX"=>axis[0]=value_float(bytes,*end),
+       "AxisY"=>axis[1]=value_float(bytes,*end),
+       "AxisZ"=>axis[2]=value_float(bytes,*end),
+       "OpenAngle"=>open_angle=value_float(bytes,*end).filter(|v|v.abs()<=360.0),
+       _=>{}
+      }
+     }
+     if let [Some(x),Some(y),Some(z)]=axis {
+      let len=(x*x+y*y+z*z).sqrt();
+      if len>1e-5&&len.is_finite(){door_axis=Some([x/len,y/len,z/len]);}
+     }
+    }
+   }
+  }
   attachments.push(Attachment{prototype:filename,
    position:[pos[0].unwrap(),pos[1].unwrap(),pos[2].unwrap()],
    rotation:rotation.unwrap_or([1.,0.,0.,0.,1.,0.,0.,0.,1.]),
-   category:category.to_string()});
+   category:category.to_string(),door_axis,open_angle});
  }
  let mut warnings=Vec::new();
  if body_model.is_none(){warnings.push("Could not locate ModelName V3O reference".into());}
@@ -103,6 +126,18 @@ mod tests{
  fn floatfield(key:&str,val:f32,b:&mut Vec<u8>){
   b.extend_from_slice(&(key.len() as u32).to_le_bytes());for c in key.encode_utf16(){b.extend_from_slice(&c.to_le_bytes());}
   b.extend_from_slice(&2u32.to_le_bytes());b.extend_from_slice(&val.to_le_bytes());
+ }
+ #[test]fn reads_door_axis_and_angle(){
+  let mut b=Vec::new();strfield("ModelName","mod:Models/car.V3O",&mut b);
+  b.extend_from_slice(&4u32.to_le_bytes());for c in "Door".encode_utf16(){b.extend_from_slice(&c.to_le_bytes());}
+  b.extend_from_slice(&0u32.to_le_bytes());
+  floatfield("AxisX",0.,&mut b);floatfield("AxisY",1.,&mut b);
+  floatfield("AxisZ",0.,&mut b);floatfield("OpenAngle",-125.,&mut b);
+  strfield("Filename","mod:Prototypes/car_door.e4p",&mut b);
+  floatfield("PosX",1.,&mut b);floatfield("PosY",2.,&mut b);floatfield("PosZ",3.,&mut b);
+  let result=parse(&b).unwrap();
+  assert_eq!(result.attachments[0].door_axis,Some([0.,1.,0.]));
+  assert_eq!(result.attachments[0].open_angle,Some(-125.));
  }
  #[test]fn reads_attachment(){
   let mut b=Vec::new();strfield("ModelName","mod:Models/a.V3O",&mut b);
