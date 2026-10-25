@@ -289,3 +289,11 @@ Original vehicle textures are now deduplicated by decoded RGBA content, dimensio
 ## Reusable GPU material registry (engine groundwork)
 
 The viewer now uses `apps/openem4/src/material_registry.rs`, a reusable content-addressed resource registry rather than maintaining its own GPU upload lookup table. The registry deduplicates original RGBA8-sRGB texture materials by dimensions and decoded content, returns shared `Arc<wgpu::BindGroup>` handles, and tracks estimated unique mipmapped texture bytes. The V3O/E4P viewer is its first consumer. This is a foundational reusable module, **not yet a single live global registry across all scene objects**: full-map renderers will need to share one registry tied to the same GPU device, sampler and bind-group layout. Enhanced-texture streaming, residency, and animation behavior are otherwise unchanged. Validate using `cargo test -p openem4 --bin em4-view` and your regular London Mod viewer command; compilation has not been independently verified in this environment.
+
+## Multi-object V3O scene preview (experimental)
+
+The viewer now supports `--instances=N` for **standalone V3O models**, with N from 1 to 16. It arranges N instances of the same parsed mesh on a grid in native EM4 coordinates, then renders the combined scene using a single set of material surfaces and the existing content-addressed material registry. This is a tangible multi-object preview for shared GPU resource handling; it does not yet import arbitrary heterogeneous scene objects or E4M world maps.
+
+Example: `cargo run -p openem4 --bin em4-view -- "C:\\path\\to\\model.v3o" --instances=4`
+
+E4P prototypes continue operating as before with doors, ASF attachments and emergency lights. Instance preview is deliberately rejected for E4P to prevent duplicating attached parts without corresponding animation metadata. Scene assembly is bounded to 16 instances and 2 million vertices/triangles. The implementation has not been independently compiled on Windows.
