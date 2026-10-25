@@ -55,14 +55,14 @@ fn multiply(a:[[f32;4];4],b:[[f32;4];4])->[[f32;4];4]{
  for col in 0..4 {for row in 0..4 {for k in 0..4 {out[col][row]+=a[k][row]*b[col][k];}}}
  out
 }
-struct Depth { texture:wgpu::Texture,view:wgpu::TextureView }
+struct Depth { _texture:wgpu::Texture,view:wgpu::TextureView }
 fn depth(device:&wgpu::Device,w:u32,h:u32)->Depth {
  let texture=device.create_texture(&wgpu::TextureDescriptor {
   label:Some("V3O depth"),size:wgpu::Extent3d{width:w.max(1),height:h.max(1),depth_or_array_layers:1},
   mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth24Plus,
   usage:wgpu::TextureUsages::RENDER_ATTACHMENT,view_formats:&[],
  });
- let view=texture.create_view(&Default::default());Depth{texture,view}
+ let view=texture.create_view(&Default::default());Depth{_texture:texture,view}
 }
 #[derive(Default)]
 struct LightControls { headlights:bool, brake:bool, left:bool, right:bool, beacon:bool }
@@ -76,7 +76,7 @@ impl LightControls {
 }
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
- pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,index_count:u32,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
+ pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
@@ -314,7 +314,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now()})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now()})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -444,35 +444,29 @@ fn find_corona_file(model_path:&Path,name:&str)->Option<std::path::PathBuf>{
 
 fn load_surface_image(model_path:&Path,filename:&str)->(u32,u32,Vec<u8>){
  let fallback=|| (2,2,vec![220,220,220,255,120,120,120,255,120,120,120,255,220,220,220,255]);
- if filename.is_empty()||filename.contains(".."){return fallback();}
- let base=match model_path.parent(){Some(p)=>p,None=>return fallback()};
+ if filename.trim().is_empty(){return fallback();}
  let requested=filename.replace('\\',"/");
- let mut folder=if Path::new(filename).is_absolute(){
-  let path=Path::new(filename);
-  match fs::read(path){Ok(bytes)=>{
-   let decoded=if filename.to_ascii_lowercase().ends_with(".dds"){
-    em4_formats::dds::decode_dds(&bytes).map(|im|(im.width,im.height,im.pixels)).map_err(|e|e.to_string())
-   }else{image::load_from_memory(&bytes).map(|im|{let rgba=im.to_rgba8();(rgba.width(),rgba.height(),rgba.into_raw())}).map_err(|e|e.to_string())};
-   return decoded.unwrap_or_else(|_|fallback());
-  },Err(_)=>return fallback()}
- }else{base.to_path_buf()};
- for component in requested.split('/'){
-  if component.is_empty()||component=="."{continue;}
-  let entry=match std::fs::read_dir(&folder).ok().and_then(|entries|entries.flatten().find(|e|e.file_name().to_string_lossy().eq_ignore_ascii_case(component))){
-   Some(e)=>e,None=>{eprintln!("Missing texture: {filename}");return fallback();}
-  };
-  folder=entry.path();
- }
- let bytes=match fs::read(&folder){Ok(b)=>b,Err(e)=>{eprintln!("Texture read failed {filename}: {e}");return fallback();}};
- let decoded=if filename.to_ascii_lowercase().ends_with(".dds"){
+ let path=Path::new(&requested);
+ // Texture paths may be local V3O filenames, explicit mod: game references,
+ // or an absolute child-model texture path produced by E4P assembly.
+ let found=if path.is_absolute() {
+  path.is_file().then(||path.to_path_buf())
+ }else if let Some(game_ref)=requested.strip_prefix("mod:"){
+  data_root(model_path).ok().and_then(|root|resolve_game_ref(&root,game_ref))
+ }else {
+  let local=model_path.parent().and_then(|folder|lookup_in_root(folder,&requested));
+  local.or_else(||data_root(model_path).ok().and_then(|root|resolve_game_ref(&root,&requested)))
+ };
+ let Some(found)=found else{eprintln!("Missing texture: {filename}");return fallback()};
+ let Ok(bytes)=fs::read(&found)else{eprintln!("Cannot read texture: {}",found.display());return fallback()};
+ let decoded=if found.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("dds")){
   em4_formats::dds::decode_dds(&bytes).map(|im|(im.width,im.height,im.pixels)).map_err(|e|e.to_string())
  }else{
   image::load_from_memory(&bytes).map(|im|{let rgba=im.to_rgba8();(rgba.width(),rgba.height(),rgba.into_raw())}).map_err(|e|e.to_string())
  };
- match decoded {Ok(result)=>{println!("Loaded texture: {filename}");result},
-  Err(e)=>{eprintln!("Texture unsupported {filename}: {e}");fallback()}}
+ match decoded{Ok(result)=>{println!("Loaded texture: {}",found.display());result},
+  Err(e)=>{eprintln!("Texture unsupported {}: {e}",found.display());fallback()}}
 }
-
 
 fn data_root(path:&Path)->Result<std::path::PathBuf,String>{
  // Standalone games use Data/, while mods live under Mods/<mod name>/.
