@@ -8,6 +8,13 @@ const MAGIC:u32=0x1337C0D3;
 const MAX_UNPACKED:usize=64*1024*1024;
 fn invalid(msg:&str)->io::Error { io::Error::new(io::ErrorKind::InvalidData,msg.to_string()) }
 pub fn unpack(bytes:&[u8])->io::Result<Vec<u8>> {
+ let data=unpack_resource(bytes)?;
+ if !data.starts_with(b"[VNUM=") {return Err(invalid("decompressed V3O lacks version header"));}
+ Ok(data)
+}
+
+/// Generic packed game resource decoder: does not assume a V3O payload.
+pub fn unpack_resource(bytes:&[u8])->io::Result<Vec<u8>> {
  if bytes.starts_with(b"[VNUM=") {if bytes.len()>MAX_UNPACKED{return Err(invalid("V3O exceeds size limit"));}return Ok(bytes.to_vec());}
  if bytes.len()<22 {return Err(invalid("V3O header too short"));}
  let word=|i:usize|u32::from_le_bytes(bytes[i..i+4].try_into().unwrap());
@@ -20,7 +27,6 @@ pub fn unpack(bytes:&[u8])->io::Result<Vec<u8>> {
  let mut reader=ZlibDecoder::new(&bytes[20..]).take(expected as u64+1);
  reader.read_to_end(&mut data)?;
  if data.len()!=expected {return Err(invalid("V3O uncompressed length mismatch"));}
- if !data.starts_with(b"[VNUM=") {return Err(invalid("decompressed V3O lacks version header"));}
  Ok(data)
 }
 #[cfg(test)]
