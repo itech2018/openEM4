@@ -84,7 +84,7 @@ struct Viewer {
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
- lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_open:bool,
+ lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
  async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>)->Result<Self,String>{
@@ -316,25 +316,47 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now(),doors,closed_vertices:vertices,door_open:false})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn toggle_doors(&mut self){
-  self.door_open=!self.door_open;
-  let mut verts=self.closed_vertices.clone();
-  let angle=if self.door_open{65.0f32.to_radians()}else{0.0};
-  let (sn,cs)=angle.sin_cos();
-  for door in &self.doors {
-   // Provisional viewer-only hinge at E4P child anchor, rotates about vertical Y.
-   for v in &mut verts[door.range.clone()]{
-    let x=v.pos[0]-door.pivot[0];let z=v.pos[2]-door.pivot[2];
-    v.pos[0]=door.pivot[0]+cs*x-sn*z;
-    v.pos[2]=door.pivot[2]+sn*x+cs*z;
-    let nx=v.normal[0];let nz=v.normal[2];
-    v.normal[0]=cs*nx-sn*nz;v.normal[2]=sn*nx+cs*nz;
-   }
+  if self.doors.is_empty(){println!("No E4P child doors found");return;}
+  let indices:Vec<usize>=match self.selected_door{Some(i) if i<self.doors.len()=>vec![i],_=> (0..self.doors.len()).collect()};
+  let opening=indices.iter().any(|&i|!self.door_targets[i]);
+  for i in indices {self.door_targets[i]=opening;}
+  println!("Door target: {} (selection {:?})",if opening{"OPEN"}else{"CLOSED"},self.selected_door);
+ }
+ fn select_door(&mut self,digit:usize){
+  if digit==0 {self.selected_door=None;println!("Door selection: ALL");}
+  else if digit<=self.doors.len(){self.selected_door=Some(digit-1);println!("Door selection: {}",digit);}
+  else {println!("Door {} not present; {} door(s) decoded",digit,self.doors.len());}
+ }
+ fn tick_doors(&mut self)->bool {
+  let now=Instant::now();
+  let dt=now.duration_since(self.last_door_tick).as_secs_f32().min(0.1);
+  self.last_door_tick=now;
+  let mut moving=false;let mut changed=false;
+  for (i,p) in self.door_progress.iter_mut().enumerate(){
+   let goal=if self.door_targets[i]{1.0}else{0.0};
+   let next=if *p<goal{(*p+dt*1.3).min(goal)}else{(*p-dt*1.3).max(goal)};
+   if (next-*p).abs()>1e-6{*p=next;changed=true;}
+   if (goal-*p).abs()>1e-5{moving=true;}
   }
-  self.queue.write_buffer(&self.vertices,0,bytemuck::cast_slice(&verts));
-  println!("Door preview: {} ({} doors)",if self.door_open{"OPEN"}else{"CLOSED"},self.doors.len());
+  if changed {
+   let mut verts=self.closed_vertices.clone();
+   for (i,door) in self.doors.iter().enumerate(){
+    let t=self.door_progress[i];let eased=t*t*(3.0-2.0*t);
+    let (sn,cs)=(65.0f32.to_radians()*eased).sin_cos();
+    for v in &mut verts[door.range.clone()]{
+     let x=v.pos[0]-door.pivot[0];let z=v.pos[2]-door.pivot[2];
+     v.pos[0]=door.pivot[0]+cs*x-sn*z;
+     v.pos[2]=door.pivot[2]+sn*x+cs*z;
+     let nx=v.normal[0];let nz=v.normal[2];
+     v.normal[0]=cs*nx-sn*nz;v.normal[2]=sn*nx+cs*nz;
+    }
+   }
+   self.queue.write_buffer(&self.vertices,0,bytemuck::cast_slice(&verts));
+  }
+  moving
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -613,7 +635,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
-   if viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
+   let door_moving=viewer.tick_doors();
+   if door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
   }
   if let Event::WindowEvent{window_id,event}=event {
    if window_id!=window.id(){return;}
@@ -651,6 +674,16 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
        PhysicalKey::Code(KeyCode::KeyB)=>{viewer.lights.brake=!viewer.lights.brake;println!("Brake lights: {}",viewer.lights.brake);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyL)=>{viewer.lights.left=!viewer.lights.left;println!("Left indicator: {}",viewer.lights.left);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyK)=>{viewer.lights.right=!viewer.lights.right;println!("Right indicator: {}",viewer.lights.right);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::Digit0)=>viewer.select_door(0),
+       PhysicalKey::Code(KeyCode::Digit1)=>viewer.select_door(1),
+       PhysicalKey::Code(KeyCode::Digit2)=>viewer.select_door(2),
+       PhysicalKey::Code(KeyCode::Digit3)=>viewer.select_door(3),
+       PhysicalKey::Code(KeyCode::Digit4)=>viewer.select_door(4),
+       PhysicalKey::Code(KeyCode::Digit5)=>viewer.select_door(5),
+       PhysicalKey::Code(KeyCode::Digit6)=>viewer.select_door(6),
+       PhysicalKey::Code(KeyCode::Digit7)=>viewer.select_door(7),
+       PhysicalKey::Code(KeyCode::Digit8)=>viewer.select_door(8),
+       PhysicalKey::Code(KeyCode::Digit9)=>viewer.select_door(9),
        PhysicalKey::Code(KeyCode::KeyD)=>{viewer.toggle_doors();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyO)=>{viewer.corona_occlusion=!viewer.corona_occlusion;println!("Corona depth occlusion: {}",viewer.corona_occlusion);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyE)=>{viewer.lights.beacon=!viewer.lights.beacon;println!("Beacon: {}",viewer.lights.beacon);window.request_redraw();},
