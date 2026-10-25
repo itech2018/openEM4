@@ -43,6 +43,9 @@ fn shade(normal: vec3<f32>) -> f32 {
  let tint=select(vec3<f32>(1.0,0.09,0.08),vec3<f32>(0.1,0.35,1.0),category==1u);
  let tint2=select(tint,vec3<f32>(1.0,1.0,0.9),category==2u);
  let tint3=select(tint2,vec3<f32>(1.0,0.62,0.1),category==3u);
- let rgb=mix(tint3,corona.rgb,0.65);
- return vec4<f32>(rgb,corona.a);
+ // Preserve the original artwork, but keep the tint visible for pale coronas.
+ let rgb=mix(tint3,corona.rgb,0.45);
+ let radial=1.0-smoothstep(0.28,0.71,length(vec2<f32>(u,v.uv.y)-vec2<f32>(0.5)));
+ let opacity=max(corona.a*radial,0.0);
+ return vec4<f32>(rgb,opacity);
 }
