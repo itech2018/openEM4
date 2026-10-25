@@ -1,7 +1,7 @@
 # Roadmap
 
 - **v0.1:** Rust foundation, renderer diagnostic, filesystem and installation scanner.
-- **v0.2:** Verified V3O model parsing, textures, E4P prototypes, model inspection.
+- **v0.2 (in progress):** format inspection CLI, DDS header validation and independently verified V3O/E4P parsers; GPU texture upload and model rendering to follow.
 - **v0.3:** E4M maps, terrain, scenery and world rendering.
 - **v0.4:** Selectable units, vehicle controls, pathfinding and traffic.
 - **v0.5:** Legacy scripting interpreter and EM4 API emulation.
@@ -11,4 +11,4 @@
 - **v0.9:** Modern editor and optional enhanced rendering.
 - **v1.0:** Playable release gated by tested compatibility.
 
-Version milestones are goals and not fixed release commitments.
+No completed model or texture rendering claim is made by the current inspector.

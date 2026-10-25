@@ -20,3 +20,11 @@ Running the app displays a GPU diagnostic grid. The `--scan` option prints JSON 
 See [architecture](docs/ARCHITECTURE.md), [compatibility](docs/COMPATIBILITY.md) and [roadmap](docs/ROADMAP.md).
 
 MIT licensed, independent and unofficial. Don't redistribute proprietary game content.
+
+## Format inspection (v0.2 research)
+
+```
+cargo run -p openem4 --bin em4-inspect -- "C:\\Games\\Emergency 4\\Mods\\MyMod\\Models\\truck.v3o"
+```
+
+This currently identifies packed/text V3O candidates, opaque E4P/E4M files and DDS headers; geometry decoding and model rendering are not yet implemented. See `docs/FORMATS.md`.
