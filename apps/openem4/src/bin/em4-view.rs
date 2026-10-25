@@ -185,6 +185,7 @@ impl Viewer {
     else{let _=complete.send(EnhancedTexture{indices,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
    });
   }
+  let mut staged_jobs=Vec::<(usize,EnhancementJob,blake3::Hash)>::new();
   let mut enhancement_total=0usize;
   let mut duplicate_count=0usize;
   let mut pending_keys=std::collections::HashMap::<blake3::Hash,std::sync::Arc<std::sync::Mutex<Vec<usize>>>>::new();
@@ -204,9 +205,11 @@ impl Viewer {
      }else{
       let indices=std::sync::Arc::new(std::sync::Mutex::new(vec![i]));
       let job=EnhancementJob{indices:indices.clone(),name:surface.texture.clone(),w,h,pixels:pixels.clone(),scale};
-      // A saturated queue must never delay rendering the original model.
-      if job_tx.try_send(job).is_ok(){enhancement_total+=1;pending_keys.insert(key,indices);}
-      else{eprintln!("Enhancement queue full; keeping original {}",surface.texture);}
+      // Stage jobs so large visible mesh surfaces get first chance at the
+      // bounded queue, rather than ordering by unrelated surface-file order.
+      let triangles=mesh.triangles.iter().filter(|t|t.surface_index==i).count();
+      staged_jobs.push((triangles,job,key));
+      pending_keys.insert(key,indices);
      }
 
     }
@@ -225,9 +228,15 @@ impl Viewer {
    if count>0.0 {for x in &mut center{*x/=count;}}
    draws.push((ranges[i].clone(),group,material_kind,center));
   }
+  staged_jobs.sort_by(|a,b|b.0.cmp(&a.0));
+  let staged_count=staged_jobs.len();
+  for (_,job,_) in staged_jobs {
+   if job_tx.try_send(job).is_ok(){enhancement_total+=1;}
+   else{break;}
+  }
   drop(job_tx);
   drop(enhance_tx);
-  println!("Enhancement jobs queued: {} ({} duplicate surface requests joined)",enhancement_total,duplicate_count);
+  println!("Enhancement jobs queued: {}/{} prioritized by surface triangle coverage ({} duplicates joined)",enhancement_total,staged_count,duplicate_count);
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
