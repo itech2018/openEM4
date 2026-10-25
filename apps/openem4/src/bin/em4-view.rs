@@ -906,9 +906,45 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  if instance_count>1&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
   return Err("--instances currently supports standalone V3O meshes only, to preserve E4P attachment animations".into());
  }
+ let extra_models=env::args_os().skip(2).filter_map(|arg|{
+  let arg=arg.to_string_lossy();
+  arg.strip_prefix("--add-v3o=").map(std::path::PathBuf::from)
+ }).collect::<Vec<_>>();
+ if !extra_models.is_empty()&&instance_count!=1{
+  return Err("--add-v3o and --instances cannot currently be combined".into());
+ }
+ if !extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
+  return Err("--add-v3o requires a standalone V3O main model (E4P attachments are not instanced)".into());
+ }
+ if extra_models.len()>15{return Err("maximum 16 V3O scene objects".into());}
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
- }else{(scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new())};
+ }else if extra_models.is_empty(){
+  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new())
+ }else{
+  let paths=std::iter::once(path.clone()).chain(extra_models).collect::<Vec<_>>();
+  let mut models=Vec::new();
+  for model_path in &paths {
+   let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(model_path)?)?;
+   for surface in &mut mesh.surfaces{
+    let texture=surface.texture.replace('\\',"/");
+    if texture.trim().is_empty(){continue;}
+    let resolved=if Path::new(&texture).is_absolute(){
+     Some(std::path::PathBuf::from(&texture))
+    }else if let Some(game_ref)=texture.strip_prefix("mod:"){
+     data_root(model_path).ok().and_then(|root|resolve_game_ref(&root,game_ref))
+    }else{
+     model_path.parent().and_then(|folder|lookup_in_root(folder,&texture))
+      .or_else(||data_root(model_path).ok().and_then(|root|resolve_game_ref(&root,&texture)))
+    };
+    if let Some(found)=resolved {surface.texture=found.to_string_lossy().into_owned();}
+    else {eprintln!("Scene texture not resolved for {}: {}",model_path.display(),texture);}
+   }
+   models.push(mesh);
+  }
+  println!("Multi-V3O scene: {} independently loaded models",models.len());
+  (scene_mesh::combine_v3o(models)?,path.clone(),Vec::new())
+ };
  println!("Scene instances: {} (shared material surfaces)",instance_count);
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
  let event_loop=EventLoop::new()?;
