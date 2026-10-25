@@ -167,7 +167,7 @@ impl Viewer {
    label:Some(if mode==2{"V3O transparent pipeline"}else if mode==1{"V3O cutout pipeline"}else{"V3O opaque pipeline"}),
    layout:Some(&pipeline_layout),
    vertex:wgpu::VertexState{module:&shader,entry_point:"vs_main",buffers:&[Vertex::desc()],compilation_options:Default::default()},
-   fragment:Some(wgpu::FragmentState{module:&shader,entry_point:"fs_main",
+   fragment:Some(wgpu::FragmentState{module:&shader,entry_point:if mode==1{"fs_cutout"}else{"fs_main"},
     targets:&[Some(wgpu::ColorTargetState{format,blend:if mode==2{Some(wgpu::BlendState::ALPHA_BLENDING)}else{None},
      write_mask:wgpu::ColorWrites::ALL})],
     compilation_options:Default::default()}),
