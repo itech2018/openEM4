@@ -229,6 +229,13 @@ impl Viewer {
      image::Rgba([255,255,255,(a*255.0) as u8])
     })
    };
+   // Original corona TGAs can have unusable all-zero or all-opaque alpha.
+   // Recover opacity from RGB intensity only for these degenerate cases.
+   let mut rgba=rgba;
+   let (lo,hi)=rgba.pixels().fold((255u8,0u8),|(lo,hi),p|(lo.min(p[3]),hi.max(p[3])));
+   if lo==hi {
+    for p in rgba.pixels_mut(){p[3]=p[0].max(p[1]).max(p[2]);}
+   }
    let (tw,th)=rgba.dimensions();
    let tex=device.create_texture(&wgpu::TextureDescriptor{
     label:Some("original E4P corona"),size:wgpu::Extent3d{width:tw,height:th,depth_or_array_layers:1},
@@ -261,7 +268,7 @@ impl Viewer {
     targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})],compilation_options:Default::default()}),
    primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
    depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth24Plus,
-    depth_write_enabled:false,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
+    depth_write_enabled:false,depth_compare:wgpu::CompareFunction::Always,stencil:Default::default(),bias:Default::default()}),
    multisample:Default::default(),multiview:None
   });
   let vertex_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
@@ -369,7 +376,7 @@ impl Viewer {
    pass.set_vertex_buffer(0,self.marker_vertex.slice(..));
    pass.set_index_buffer(self.marker_index.slice(..),wgpu::IndexFormat::Uint32);
    for (index,(range,kind,frequency,offset)) in self.light_markers.iter().enumerate() {
-    let pulse=*frequency<=0.0 || ((t*frequency+offset).fract()<0.5);
+    let pulse=!frequency.is_finite()||*frequency<=0.0 || ((t*frequency.min(20.0)+offset).fract()<0.5);
     let enabled=match kind {
      0|1=>self.lights.beacon||self.lights.brake,
      2=>self.lights.headlights,
