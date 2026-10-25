@@ -203,3 +203,7 @@ Press **D** in `em4-view` to toggle a simple open/closed pose for child attachme
 ## Smooth individual door preview
 
 Doors now interpolate smoothly between closed and a provisional 65° pose using eased, time-based motion (~0.77 seconds per full stroke). Press **0** to select all detected doors or **1–9** to select an individual door by its printed assembly order, then press **D** to toggle that selection. The viewer recomputes each frame from untouched closed vertices, avoiding cumulative drift, and redraws while doors move. The hinge and angle are provisional and do not yet decode native door animation. This is viewer-only and leaves original data intact.
+
+## Door hinge preview correction
+
+The previous door animation rotated children around their E4P attachment origin, causing implausible arcs and doors lifting away from the vehicle. The preview now estimates a vertical hinge at the front/rear edge of each door's **closed mesh bounds**, converts that hinge from EM4 Z-up coordinates into the viewer's Y-up system, and gives opposite sides opposite swing directions. The selected door controls (1–9, 0, D) and eased motion remain. Press **J** to print each inferred hinge, assigned swing and animation progress. This is an **inferred hinge**, not yet verified original E4P metadata; unusual door geometry or vehicle orientation may still require per-door overrides. Original assets are never edited.
