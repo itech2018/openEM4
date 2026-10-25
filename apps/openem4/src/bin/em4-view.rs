@@ -124,17 +124,25 @@ impl Viewer {
      ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
    ]});
   let sampler=device.create_sampler(&wgpu::SamplerDescriptor{address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
-   mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,..Default::default()});
+   mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,mipmap_filter:wgpu::FilterMode::Linear,..Default::default()});
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
    let (w,h,pixels)=load_surface_image(model_path,&surface.texture);
+   let levels = 32 - w.max(h).leading_zeros();
    let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O material"),
-    size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:1,sample_count:1,
+    size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},mip_level_count:levels,sample_count:1,
     dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
     usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
-   queue.write_texture(wgpu::ImageCopyTexture{texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
-    &pixels,wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(w*4),rows_per_image:Some(h)},
-    wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1});
+   let mut image=image::RgbaImage::from_raw(w,h,pixels).ok_or("DDS decoder returned invalid RGBA length")?;
+   for mip in 0..levels {
+    let mw=image.width();let mh=image.height();
+    queue.write_texture(wgpu::ImageCopyTexture{texture:&texture,mip_level:mip,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
+     image.as_raw(),wgpu::ImageDataLayout{offset:0,bytes_per_row:Some(mw*4),rows_per_image:Some(mh)},
+     wgpu::Extent3d{width:mw,height:mh,depth_or_array_layers:1});
+    if mip+1<levels {
+     image=image::imageops::resize(&image,(mw/2).max(1),(mh/2).max(1),image::imageops::FilterType::Triangle);
+    }
+   }
    let view=texture.create_view(&Default::default());
    let group=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("V3O surface bind"),layout:&material_layout,
     entries:&[wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
