@@ -2,7 +2,7 @@
 use serde::Serialize;
 #[derive(Debug,Clone,Serialize)]
 pub struct Light {
- pub points:Vec<[f32;3]>,pub position:[f32;3],
+ pub points:Vec<[f32;3]>,pub position:[f32;3],pub has_offset:bool,
  pub corona_texture:String,pub flash_frequency:f32,pub flash_offset:f32,
  pub corona_size:f32,pub light_type:u32,pub color:u32,
 }
@@ -30,10 +30,10 @@ pub fn parse(bytes:&[u8])->Vec<Light>{
  while at+12<bytes.len(){
   let Some((name,end))=field(bytes,at)else{at+=1;continue};
   if name!="light" || u32_at(bytes,end)!=Some(2) {at+=1;continue}
-  let mut light=Light{points:Vec::new(),position:[0.;3],corona_texture:String::new(),
+  let mut light=Light{points:Vec::new(),position:[0.;3],has_offset:false,corona_texture:String::new(),
    flash_frequency:0.,flash_offset:0.,corona_size:0.,light_type:0,color:0xffffffff};
   let mut pos=[None,None,None];
-  let mut cursor=end+8;let limit=(cursor+2048).min(bytes.len());
+  let mut cursor=end+8;let limit=(cursor+4096).min(bytes.len());
   while cursor+12<limit {
    let Some((key,kend))=field(bytes,cursor)else{cursor+=1;continue};
    if key=="light" && u32_at(bytes,kend)==Some(2){break}
@@ -53,16 +53,23 @@ pub fn parse(bytes:&[u8])->Vec<Light>{
     }
    }else if typ==1 {let v=u32_at(bytes,kend+4).unwrap_or(0);match key.as_str(){
      "lighttype"=>light.light_type=v,"color"=>light.color=v,_=>{}
-   }}else if typ==4&&key=="coronatex" {
-    if let Some((value,_))=field(bytes,kend+4){light.corona_texture=value;}
+   }}else if typ==4 {
+    if let Some((v,_))=field(bytes,kend+4){
+     if key=="coronatex"{light.corona_texture=v;}
+     else if key=="offset" {
+      let nums:Vec<f32>=v.split(',').filter_map(|x|x.trim().parse::<f32>().ok()).collect();
+      if nums.len()==3&&nums.iter().all(|x|x.is_finite()) {
+       light.position=[nums[0],nums[1],nums[2]];
+       light.has_offset=true;
+      }
+     }
+    }
    }
    cursor=next;
   }
-  if !light.points.is_empty(){
-   let n=light.points.len() as f32;
-   for p in &light.points{for i in 0..3{light.position[i]+=p[i]/n;}}
-   out.push(light);
-  }
+  // A light's offset is its transform anchor; the point array is local polygon data.
+  // Do not reinterpret its polygon vertices as world-space light positions.
+  if light.has_offset {out.push(light);}
   // Resume at the next boundary candidate, never from the beginning of this record.
   at=cursor.max(at+1);
  }
