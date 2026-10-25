@@ -1,18 +1,16 @@
-# Original Emergency 4 format research
+# Legacy asset support
 
-## Current inspector
-`cargo run -p openem4 --bin em4-inspect -- "C:\\path\\to\\asset.dds"`
+## Current commands
+- `cargo run -p openem4 --bin em4-inspect -- path/to/file.v3o`: non-mutating file inspection.
+- `cargo run -p openem4 --bin em4-texture -- path/to/texture.dds preview.png`: decode DXT1 / DXT3 / DXT5 DDS first mip into an RGBA PNG file.
 
-The inspector returns structured JSON without changing the original file.
+### DDS
+The CPU preview decoder implements BC1 / BC2 / BC3 with bounds checking, edge cropping and explicit unsupported-format errors. It currently does not decode uncompressed DDS, cubemaps, DX10 DDS, array textures, or later mip levels.
 
-- DDS: header magic, dimensions, mipmap count and FourCC extracted from bounded input.
-- V3O: only distinguishes plausible readable ASCII from packed/unknown binary; makes no mesh-decoding claim.
-- E4P and E4M: opaque identification; parsing not implemented yet.
+### V3O
+Original EM4 V3O geometry is normally packed binary and the game's Editor supports unpacking to ASCII. A reliable binary format specification and compatible nonredistributable test fixtures are still needed. The inspector only classifies potential text versus binary; it does not decode geometry. Never unpack the original installation in place—copy files first.
 
-The original Editor's `Modifications > unpack file` facility can produce an ASCII V3O. **Do not run destructive unpack operations on original game files**: make separate copies first.
+### E4P / E4M
+These remain opaque and unparsed.
 
-Future: document independent V3O vertex/material grammar, test with owner-supplied nonredistributable fixtures, then add geometry decoding and a renderer bridge.
-
-References:
-- https://github.com/em4resource/EM4-Modding-Encyclopedia/blob/main/docs/editor-manual-reference.md
-- https://oldversion.emergency-planet.com/tutorials/article/5-editing-your-unitxml-files/
+Source: https://github.com/em4resource/EM4-Modding-Encyclopedia/blob/main/docs/editor-manual-reference.md

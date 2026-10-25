@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/em4-core", "crates/em4-vfs", "crates/em4-render", "crates/em4-formats", "apps/openem4"]
+members = ["crates/em4-core", "crates/em4-vfs", "crates/em4-render", "apps/openem4"]
 
 [workspace.package]
 version = "0.1.0-dev"

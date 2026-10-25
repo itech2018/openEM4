@@ -1,3 +1,4 @@
+pub mod dds;
 //! Non-mutating, bounded inspection of legacy Emergency 4 assets.
 //! This module does NOT yet decode packed V3O geometry or E4P prototypes.
 use serde::Serialize;

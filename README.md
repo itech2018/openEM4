@@ -28,3 +28,9 @@ cargo run -p openem4 --bin em4-inspect -- "C:\\Games\\Emergency 4\\Mods\\MyMod\\
 ```
 
 This currently identifies packed/text V3O candidates, opaque E4P/E4M files and DDS headers; geometry decoding and model rendering are not yet implemented. See `docs/FORMATS.md`.
+
+## DDS texture preview
+
+`cargo run -p openem4 --bin em4-texture -- "C:\\path\\texture.dds" preview.png`
+
+Supports DXT1, DXT3 and DXT5 (first mip); see `docs/FORMATS.md`. Packed V3O mesh parsing is still research work.
