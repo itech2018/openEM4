@@ -25,7 +25,7 @@ pub fn inspect(bytes:&[u8])->io::Result<PrototypeReport> {
  let mut encoding="binary_or_unknown";
  let mut unpacked:Option<Vec<u8>>=None;
  if bytes.len()>=20 && bytes[..4]==0x1337C0D3u32.to_le_bytes() {
-  match crate::v3o_packed::unpack(bytes) {
+  match crate::v3o_packed::unpack_resource(bytes) {
    Ok(content)=>{unpacked=Some(content);encoding="packed_zlib_text_candidate";},
    Err(e)=>{eprintln!("E4P appears packed, but V3O unpacker rejected it: {e}");}
   }
