@@ -137,3 +137,7 @@ Vehicle materials now use a directional key light, subtle opposite-side fill and
 ## Experimental vehicle light controls
 
 The V3O/E4P viewer now has a **light state and timing foundation**: H toggles headlights, B toggles brake lights, L and K toggle left/right indicators, and E toggles emergency beacon state. A timer computes indicator and beacon blink phases, and the viewer redraws while timed states are active. These are diagnostic control states only: **no light meshes, emissive surface selection, beams, colored flashing points, or authentic E4P lighting data have been implemented yet**. Console messages confirm toggles. Vehicle geometry and its original textures remain unchanged.
+
+## Visible vehicle-light preview
+
+The V3O viewer now draws **temporary colored diagnostic quads** when vehicle light states are enabled: `E` alternates red/blue markers, `H` shows two white headlight previews, `B` shows rear red brake previews, and `L`/`K` flash amber turn markers. Positions are estimated from the assembled mesh's bounding box, **not parsed from E4P light definitions**. These are unlit/glow-color preview geometry, not actual bloom, point lights or headlight projections, and might be obscured by body geometry. The original mesh and DDS files are unchanged. The marker positions must be replaced with real prototype-driven emitters. The code has not been independently built or visually verified.
