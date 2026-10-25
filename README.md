@@ -141,3 +141,9 @@ The V3O/E4P viewer now has a **light state and timing foundation**: H toggles he
 ## Visible vehicle-light preview
 
 The V3O viewer now draws **temporary colored diagnostic quads** when vehicle light states are enabled: `E` alternates red/blue markers, `H` shows two white headlight previews, `B` shows rear red brake previews, and `L`/`K` flash amber turn markers. Positions are estimated from the assembled mesh's bounding box, **not parsed from E4P light definitions**. These are unlit/glow-color preview geometry, not actual bloom, point lights or headlight projections, and might be obscured by body geometry. The original mesh and DDS files are unchanged. The marker positions must be replaced with real prototype-driven emitters. The code has not been independently built or visually verified.
+
+## E4P original vehicle light definitions (experimental)
+
+The viewer now reads light point sets directly from the original vehicle `.e4p`. The binary decoder also extracts each light's `coronatex`, `flashfreq`, `flashoffs`, `coronasize`, `lighttype` and `color`. Approximate bounding-box markers are removed. Markers are placed at the mean of each decoded light's point set, converted from EM4 Z-up coordinates to viewer Y-up. Console output lists every recovered light.
+
+Important limitations: this is the first experimental decoder for the observed ASF binary E4P layout, **not a verified complete light definition interpreter**. The markers are still plain coloured quads, not actual textured coronas or lights. The type-to-control mapping uses corona texture filenames as a heuristic; full brake/indicator/headlight categorisation, source colour, polygon orientation, intensity and original game flashing semantics need validation. No original assets are modified. Testing must confirm E4P records decode correctly in the Windows build.
