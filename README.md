@@ -219,3 +219,13 @@ The E4P viewer now distinguishes **central horizontal-axis equipment** (such as 
 ## Mod side-door regression safeguard
 
 After native E4P axes were enabled, the London Mod Astra could rotate door parts across its windscreen. The viewer now **defaults to the last verified geometry-based side-door animation for installed mods**. The base-game ASF keeps its native horizontal ramp mode. To experiment with native equipment axes in a mod, pass `--native-mod-door-axes` after the E4P filename; this flag is for diagnostics and not the recommended default. The viewer prints the chosen pivot, axis and mode. Actual per-prototype door hinge metadata still requires research; avoid applying generic native-axis assumptions to all modded car doors.
+
+## Optional 4× spatial texture upscaling (first implementation)
+
+The V3O/E4P viewer now supports `--texture-upscale=4`, using CPU Catmull–Rom interpolation for decoded material textures, with a BLAKE3 content-addressed PNG cache. Cached results are stored in `%LOCALAPPDATA%\\openEM4\\textures\\spatial-v1` on Windows (or `$XDG_CACHE_HOME/openEM4/textures/spatial-v1` / `~/.cache/openEM4/textures/spatial-v1` on Linux). Delete the directory at any time to regenerate. Original DDS/TGA assets are read-only. Upscaling is disabled by default; this first implementation generates textures on load, not asynchronously, and **does not provide AI super-resolution or new source detail**. Output is limited to 8192 pixels per side and 64 MiB decoded RGBA per texture to control memory usage; larger textures fall back to original resolution. Corona TGA sprites are excluded for now. 
+
+```powershell
+cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Mods\\London Mod v1.3\\Prototypes\\Vehicles\\Metropolitan Police\\astra01.e4p" --texture-upscale=4
+```
+
+The changes have not been independently compiled in the development environment.
