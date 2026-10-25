@@ -78,3 +78,5 @@ mod tests {
         assert_eq!(inspect_bytes("v3o", &[0,1,2]).unwrap(), Inspection::V3o { representation: "binary_or_unknown".into(), version_hint: None });
     }
 }
+
+pub mod e4p_lights;
