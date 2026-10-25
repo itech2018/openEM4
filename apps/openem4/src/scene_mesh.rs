@@ -80,6 +80,20 @@ pub fn combine_v3o(models:Vec<Mesh>)->Result<Mesh,String>{
 #[cfg(test)]
 mod tests {
  use super::*;
+ #[test] fn merges_two_distinct_meshes_and_materials(){
+  let make=|name:&str|Mesh{version:"1.43".into(),vertices:vec![
+   Vertex{position:[0.,0.,0.],normal:[0.,0.,1.],uv:[0.,0.]},
+   Vertex{position:[1.,0.,0.],normal:[0.,0.,1.],uv:[1.,0.]},
+   Vertex{position:[0.,1.,0.],normal:[0.,0.,1.],uv:[0.,1.]}],
+   triangles:vec![Triangle{indices:[0,1,2],surface_index:0}],
+   surfaces:vec![em4_formats::v3o_mesh::Surface{name:name.into(),texture:format!("{name}.dds")}]};
+  let scene=combine_v3o(vec![make("car"),make("house")]).unwrap();
+  assert_eq!(scene.vertices.len(),6);
+  assert_eq!(scene.surfaces.len(),2);
+  assert_eq!(scene.triangles[1].indices,[3,4,5]);
+  assert_eq!(scene.triangles[1].surface_index,1);
+  assert!(scene.vertices[3].position[0]>scene.vertices[0].position[0]);
+ }
  #[test] fn repeats_geometry_without_duplication_of_materials(){
   let m=Mesh{version:"1.43".into(),vertices:vec![
    Vertex{position:[0.,0.,0.],normal:[0.,0.,1.],uv:[0.,0.]},
