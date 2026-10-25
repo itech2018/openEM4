@@ -40,8 +40,8 @@ impl Camera {
   let projection=[
    [f/aspect.max(0.01),0.0,0.0,0.0],
    [0.0,f,0.0,0.0],
-   [0.0,0.0,1.0,1.0],
-   [0.0,0.0,-0.05,0.0],
+   [0.0,0.0,-1.00005,-1.0],
+   [0.0,0.0,-0.0500025,0.0],
   ];
   multiply(projection,view)
  }
@@ -171,7 +171,7 @@ impl Viewer {
 }
 fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
- let path=env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?;
+ let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
  let bytes=fs::read(&path)?;
  let mesh=em4_formats::v3o_mesh::parse(&bytes)?;
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
