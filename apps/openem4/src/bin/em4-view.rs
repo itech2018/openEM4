@@ -80,6 +80,7 @@ struct Viewer {
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
+ marker_pipeline:wgpu::RenderPipeline,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  lights:LightControls,started:Instant,
 }
 impl Viewer {
@@ -192,6 +193,38 @@ impl Viewer {
   let pipeline=make_pipeline(0);
   let cutout_pipeline=make_pipeline(1);
   let transparent_pipeline=make_pipeline(2);
+  // Preview markers approximated from model bounds, NOT decoded EM4 lights.
+  let mut mv:Vec<Vertex>=Vec::new();let mut mi:Vec<u32>=Vec::new();
+  let radius=(diagonal*0.018).max(0.06);
+  let cx=(min[0]+max[0])*0.5;let cz=(min[2]+max[2])*0.5;
+  let side=(max[2]-min[2])*0.3;
+  let front=max[0]-(max[0]-min[0])*0.09;let rear=min[0]+(max[0]-min[0])*0.09;
+  let y=min[1]+(max[1]-min[1])*0.38;
+  let mut add=|x:f32,y:f32,z:f32,color:f32|{
+   let b=mv.len() as u32;
+   for (dx,dz) in [(-1.0,-1.0),(1.0,-1.0),(1.0,1.0),(-1.0,1.0)] {
+    mv.push(Vertex{pos:[x+dx*radius,y,z+dz*radius],normal:[0.0,1.0,0.0],uv:[color,0.0]});
+   }
+   mi.extend_from_slice(&[b,b+1,b+2,b,b+2,b+3]);
+  };
+  add(cx,max[1]+radius,cz-side,0.1);add(cx,max[1]+radius,cz+side,0.3);
+  add(front,y,cz-side,0.5);add(front,y,cz+side,0.5);
+  add(rear,y,cz-side,0.1);add(rear,y,cz+side,0.1);
+  add(front,y+radius,cz-side,0.8);add(front,y+radius,cz+side,0.8);
+  let marker_vertex=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+   label:Some("preview light verts"),contents:bytemuck::cast_slice(&mv),usage:wgpu::BufferUsages::VERTEX});
+  let marker_index=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+   label:Some("preview light indices"),contents:bytemuck::cast_slice(&mi),usage:wgpu::BufferUsages::INDEX});
+  let marker_pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
+   label:Some("preview light pipeline"),layout:Some(&pipeline_layout),
+   vertex:wgpu::VertexState{module:&shader,entry_point:"vs_main",buffers:&[Vertex::desc()],compilation_options:Default::default()},
+   fragment:Some(wgpu::FragmentState{module:&shader,entry_point:"fs_emissive",
+    targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})],compilation_options:Default::default()}),
+   primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
+   depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth24Plus,
+    depth_write_enabled:false,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
+   multisample:Default::default(),multiview:None
+  });
   let vertex_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX});
   let index_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
@@ -223,7 +256,7 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,lights:LightControls::default(),started:Instant::now()})
+   index_count:indices.len() as u32,draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,marker_vertex,marker_index,lights:LightControls::default(),started:Instant::now()})
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -276,6 +309,18 @@ impl Viewer {
     let (range,material,_,_)=&self.draws[i];
     pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
+   // Temporary unlit marker geometry: location is based on model bounds.
+   let t=self.started.elapsed().as_secs_f32();
+   let turn=(t*1.5).fract()<0.5;let emergency=(t*3.0).fract()<0.5;
+   pass.set_pipeline(&self.marker_pipeline);
+   pass.set_bind_group(1,&self.ground_material,&[]);
+   pass.set_vertex_buffer(0,self.marker_vertex.slice(..));
+   pass.set_index_buffer(self.marker_index.slice(..),wgpu::IndexFormat::Uint32);
+   if self.lights.beacon {if emergency {pass.draw_indexed(0..6,0,0..1);}else{pass.draw_indexed(6..12,0,0..1);}}
+   if self.lights.headlights {pass.draw_indexed(12..24,0,0..1);}
+   if self.lights.brake {pass.draw_indexed(24..36,0,0..1);}
+   if self.lights.left&&turn {pass.draw_indexed(36..42,0,0..1);}
+   if self.lights.right&&turn {pass.draw_indexed(42..48,0,0..1);}
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
