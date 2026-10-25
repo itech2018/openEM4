@@ -424,8 +424,9 @@ impl Viewer {
 fn find_corona_file(model_path:&Path,name:&str)->Option<std::path::PathBuf>{
  if name.is_empty()||name.contains(".."){return None}
  let file_name=Path::new(name.replace('\\',"/").as_str()).file_name()?.to_string_lossy().to_string();
- let data=model_path.ancestors().find(|p|p.file_name().is_some_and(|s|s.to_string_lossy().eq_ignore_ascii_case("Data")))?;
- let mut stack=vec![(data.to_path_buf(),0usize)];
+ let data=data_root(model_path).ok()?;
+ let mut stack=vec![(data.clone(),0usize)];
+ if data.parent().and_then(|p|p.file_name()).is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case("Mods")){stack.push((data.parent()?.parent()?.join("Data"),0));}
  let mut visited=0usize;
  while let Some((dir,depth))=stack.pop(){
   visited+=1;if visited>12000 {break}
@@ -473,22 +474,40 @@ fn load_surface_image(model_path:&Path,filename:&str)->(u32,u32,Vec<u8>){
 
 
 fn data_root(path:&Path)->Result<std::path::PathBuf,String>{
- path.ancestors().find(|p|p.file_name().map(|n|n.to_string_lossy().eq_ignore_ascii_case("Data")).unwrap_or(false))
- .map(|p|p.to_path_buf()).ok_or("E4P must be within an Emergency 4 Data directory".into())
+ // Standalone games use Data/, while mods live under Mods/<mod name>/.
+ for ancestor in path.ancestors(){
+  let Some(name)=ancestor.file_name()else{continue};
+  if name.to_string_lossy().eq_ignore_ascii_case("Data"){return Ok(ancestor.to_path_buf());}
+  if ancestor.parent().and_then(|p|p.file_name()).is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case("Mods")){
+   return Ok(ancestor.to_path_buf());
+  }
+ }
+ Err("E4P must be inside Data/ or Mods/<mod name>/".into())
 }
-fn resolve_game_ref(root:&Path,reference:&str)->Option<std::path::PathBuf>{
- let reference=reference.strip_prefix("mod:").unwrap_or(reference).trim_start_matches('/');
- let relative=reference.replace('\\',"/");
- if relative.is_empty()||relative.contains(':'){return None;}
+fn lookup_in_root(root:&Path,relative:&str)->Option<std::path::PathBuf>{
  let mut current=root.to_path_buf();
  for component in relative.split('/'){
   if component.is_empty()||component=="."{continue;}
-  if component==".."{return None;}
+  if component==".."||component.contains(':'){return None;}
   current=std::fs::read_dir(&current).ok()?.flatten().find(|e|
    e.file_name().to_string_lossy().eq_ignore_ascii_case(component))?.path();
  }
  if current.is_file() && current.canonicalize().ok()?.starts_with(root.canonicalize().ok()?){Some(current)}else{None}
 }
+fn resolve_game_ref(root:&Path,reference:&str)->Option<std::path::PathBuf>{
+ let reference=reference.strip_prefix("mod:").unwrap_or(reference).trim_start_matches('/');
+ let relative=reference.replace('\\',"/");
+ if relative.is_empty()||relative.contains(':'){return None;}
+ // Prefer mod overrides, falling back to original Data when an asset is not bundled.
+ if let Some(path)=lookup_in_root(root,&relative){return Some(path);}
+ let is_mod=root.parent().and_then(|p|p.file_name()).is_some_and(|n|n.to_string_lossy().eq_ignore_ascii_case("Mods"));
+ if is_mod {
+  let base=root.parent()?.parent()?.join("Data");
+  if base.is_dir(){return lookup_in_root(&base,&relative);}
+ }
+ None
+}
+
 fn append_model(target:&mut em4_formats::v3o_mesh::Mesh,source:em4_formats::v3o_mesh::Mesh,
  attachment:Option<&em4_formats::e4p_assembly::Attachment>,transpose_rotation:bool){
  let vertex_start=target.vertices.len() as u32;
