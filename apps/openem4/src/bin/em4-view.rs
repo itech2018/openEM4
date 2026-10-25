@@ -239,10 +239,18 @@ impl Viewer {
 
 fn load_surface_image(model_path:&Path,filename:&str)->(u32,u32,Vec<u8>){
  let fallback=|| (2,2,vec![220,220,220,255,120,120,120,255,120,120,120,255,220,220,220,255]);
- if filename.is_empty()||filename.contains("..")||Path::new(filename).is_absolute(){return fallback();}
+ if filename.is_empty()||filename.contains(".."){return fallback();}
  let base=match model_path.parent(){Some(p)=>p,None=>return fallback()};
  let requested=filename.replace('\\',"/");
- let mut folder=base.to_path_buf();
+ let mut folder=if Path::new(filename).is_absolute(){
+  let path=Path::new(filename);
+  match fs::read(path){Ok(bytes)=>{
+   let decoded=if filename.to_ascii_lowercase().ends_with(".dds"){
+    em4_formats::dds::decode_dds(&bytes).map(|im|(im.width,im.height,im.pixels)).map_err(|e|e.to_string())
+   }else{image::load_from_memory(&bytes).map(|im|{let rgba=im.to_rgba8();(rgba.width(),rgba.height(),rgba.into_raw())}).map_err(|e|e.to_string())};
+   return decoded.unwrap_or_else(|_|fallback());
+  },Err(_)=>return fallback()}
+ }else{base.to_path_buf()};
  for component in requested.split('/'){
   if component.is_empty()||component=="."{continue;}
   let entry=match std::fs::read_dir(&folder).ok().and_then(|entries|entries.flatten().find(|e|e.file_name().to_string_lossy().eq_ignore_ascii_case(component))){
@@ -279,23 +287,24 @@ fn resolve_game_ref(root:&Path,reference:&str)->Option<std::path::PathBuf>{
  if current.is_file() && current.canonicalize().ok()?.starts_with(root.canonicalize().ok()?){Some(current)}else{None}
 }
 fn append_model(target:&mut em4_formats::v3o_mesh::Mesh,source:em4_formats::v3o_mesh::Mesh,
- attachment:Option<&em4_formats::e4p_assembly::Attachment>){
+ attachment:Option<&em4_formats::e4p_assembly::Attachment>,transpose_rotation:bool){
  let vertex_start=target.vertices.len() as u32;
  let surface_start=target.surfaces.len();
  let mut verts=source.vertices;
  if let Some(a)=attachment {
   for v in &mut verts {
    let p=v.position;let r=&a.rotation;
+   let matrix=|row:usize,col:usize|if transpose_rotation{r[col*3+row]}else{r[row*3+col]};
    // E4P translations are stored in centimetre-scale game coordinates.
    v.position=[
-    r[0]*p[0]+r[1]*p[1]+r[2]*p[2]+a.position[0]/100.0,
-    r[3]*p[0]+r[4]*p[1]+r[5]*p[2]+a.position[1]/100.0,
-    r[6]*p[0]+r[7]*p[1]+r[8]*p[2]+a.position[2]/100.0,
+    matrix(0,0)*p[0]+matrix(0,1)*p[1]+matrix(0,2)*p[2]+a.position[0]/100.0,
+    matrix(1,0)*p[0]+matrix(1,1)*p[1]+matrix(1,2)*p[2]+a.position[1]/100.0,
+    matrix(2,0)*p[0]+matrix(2,1)*p[1]+matrix(2,2)*p[2]+a.position[2]/100.0,
    ];
    let n=v.normal;
-   v.normal=[r[0]*n[0]+r[1]*n[1]+r[2]*n[2],
-    r[3]*n[0]+r[4]*n[1]+r[5]*n[2],
-    r[6]*n[0]+r[7]*n[1]+r[8]*n[2]];
+   v.normal=[matrix(0,0)*n[0]+matrix(0,1)*n[1]+matrix(0,2)*n[2],
+    matrix(1,0)*n[0]+matrix(1,1)*n[1]+matrix(1,2)*n[2],
+    matrix(2,0)*n[0]+matrix(2,1)*n[1]+matrix(2,2)*n[2]];
   }
  }
  target.vertices.extend(verts);
@@ -306,7 +315,7 @@ fn append_model(target:&mut em4_formats::v3o_mesh::Mesh,source:em4_formats::v3o_
   target.triangles.push(t);
  }
 }
-fn load_vehicle(path:&Path)->Result<(em4_formats::v3o_mesh::Mesh,std::path::PathBuf),Box<dyn std::error::Error>>{
+fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_mesh::Mesh,std::path::PathBuf),Box<dyn std::error::Error>>{
  let root=data_root(path)?;
  let prototype=em4_formats::e4p_assembly::parse_file(path)?;
  let body=prototype.body_model.ok_or("E4P does not contain a readable body ModelName")?;
@@ -314,6 +323,7 @@ fn load_vehicle(path:&Path)->Result<(em4_formats::v3o_mesh::Mesh,std::path::Path
  let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(&body_path)?)?;
  let mut loaded=0usize;
  for child in &prototype.attachments {
+  println!("Attachment {}: ({:.2}, {:.2}, {:.2}) original units, rotation {:?}", child.prototype,child.position[0],child.position[1],child.position[2],child.rotation);
   let Some(p)=resolve_game_ref(&root,&child.prototype)else{
    eprintln!("Missing child prototype: {}",child.prototype);continue;
   };
@@ -325,7 +335,14 @@ fn load_vehicle(path:&Path)->Result<(em4_formats::v3o_mesh::Mesh,std::path::Path
    eprintln!("Missing child model: {model_ref}");continue;
   };
   match em4_formats::v3o_mesh::parse(&fs::read(&model_path)?) {
-   Ok(part)=>{append_model(&mut mesh,part,Some(child));loaded+=1;},
+   Ok(mut part)=>{
+    // Resolve child textures relative to their OWN model directory rather than the body.
+    if let Some(dir)=model_path.parent(){for surface in &mut part.surfaces {
+      let tex=std::path::Path::new(&surface.texture);
+      if !tex.is_absolute() && !surface.texture.contains("..") {surface.texture=dir.join(tex).to_string_lossy().into_owned();}
+    }}
+    append_model(&mut mesh,part,Some(child),transpose_rotation);loaded+=1;
+   },
    Err(err)=>eprintln!("Child model failed {}: {err}",model_path.display()),
   }
  }
@@ -336,8 +353,9 @@ fn load_vehicle(path:&Path)->Result<(em4_formats::v3o_mesh::Mesh,std::path::Path
 fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
+ let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
  let (mesh,body_path)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
-  load_vehicle(&path)?
+  load_vehicle(&path,transpose_rotation)?
  }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone())};
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
  let event_loop=EventLoop::new()?;
