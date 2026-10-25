@@ -682,7 +682,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
  let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
- println!("Texture upscaling: {}",if upscale_factor==4{"4x spatial + external cache"}else{"disabled"});
+ println!("Texture upscaling: {}",if upscale_factor==4{"4x Lanczos3 + 25% sharpening + external cache"}else{"disabled"});
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
  }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone(),Vec::new())};
