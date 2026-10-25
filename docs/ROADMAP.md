@@ -28,7 +28,11 @@ Version milestones are goals and not fixed release commitments.
 
 ## Automatic enhancement manager — staged work
 
-- **Current:** synchronous on-load enhancement in the standalone V3O/E4P viewer; content-addressed external cache, basic filename/alpha/dimension heuristics, deterministic fallbacks. This is a first manager milestone, not full-game asynchronous streaming.
-- **Next:** move the enhancement job to bounded background workers, prioritize currently visible textures, upload completed results to GPU on the render thread, and swap material bindings without blocking gameplay.
+- **Current:** two bounded background enhancement workers in the standalone V3O/E4P viewer with material replacement during event-loop rendering; content-addressed external cache, basic filename/alpha/dimension heuristics, deterministic fallbacks. This is a first manager milestone, not full-game asynchronous streaming.
+- **Next:** prioritize currently visible textures and retain work across mod loads; tune upload time/VRAM budgets and error handling for full-map workloads.
 - **Later:** GPU/VRAM residency budgets, cache eviction policy, cancellation on mod changes, asset-specific classification (liveries, glass, terrain, normal maps), telemetry-free optional quality settings, cache invalidation and multi-mod stress tests.
 - **Always:** source game and mod assets remain read-only; native display rendering remains preferred; no paid cloud AI dependency.
+
+## Worker preview status
+
+The viewer begins with original-resolution materials, queues at most 16 pending enhancement jobs and processes them using two background workers. Each event-loop iteration uploads at most one completed enhanced texture and switches the affected GPU material bind group. Queue overflow intentionally retains the original texture instead of delaying launch. This is a prototype—not full background streaming for map-scale loads. Future: deduplicated job scheduling, visibility priority, cache eviction, worker cancellation and VRAM residency tracking.
