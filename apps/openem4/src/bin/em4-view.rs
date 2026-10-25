@@ -600,7 +600,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
  let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
- }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone())};
+ }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone(),Vec::new())};
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
