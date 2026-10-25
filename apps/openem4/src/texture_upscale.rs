@@ -9,7 +9,7 @@ pub fn cache_dir()->Option<PathBuf>{
  #[cfg(not(windows))]
  let base=env::var_os("XDG_CACHE_HOME").map(PathBuf::from)
   .or_else(||env::var_os("HOME").map(|h|PathBuf::from(h).join(".cache")));
- base.map(|p|p.join("openEM4").join("textures").join("spatial-v1"))
+ base.map(|p|p.join("openEM4").join("textures").join("lanczos3-sharp25-v2"))
 }
 pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
  if factor!=4||w==0||h==0{return (w,h,pixels);}
@@ -22,7 +22,7 @@ pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
  }
  let Some(source)=RgbaImage::from_raw(w,h,pixels.clone())else{return(w,h,pixels)};
  let mut hasher=blake3::Hasher::new();
- hasher.update(b"openem4-spatial-v1-catmullrom-4x");
+ hasher.update(b"openem4-lanczos3-sharpen25-v2-4x");
  hasher.update(&w.to_le_bytes());hasher.update(&h.to_le_bytes());hasher.update(&pixels);
  let name=format!("{}.png",hasher.finalize().to_hex());
  let cache=cache_dir().map(|p|p.join(name));
@@ -35,7 +35,17 @@ pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
    }
   }
  }
- let enhanced=image::imageops::resize(&source,tw,th,FilterType::CatmullRom);
+ let mut enhanced=image::imageops::resize(&source,tw,th,FilterType::Lanczos3);
+ // Mild RGB unsharp masking: amount=0.25. Never sharpen or alter alpha,
+ // preventing transparent edges from becoming opaque halos.
+ let blurred=image::imageops::blur(&enhanced,0.8);
+ for (pixel,soft) in enhanced.pixels_mut().zip(blurred.pixels()){
+  for channel in 0..3 {
+   let original=pixel[channel] as f32;
+   let correction=(original-soft[channel] as f32)*0.25;
+   pixel[channel]=(original+correction).round().clamp(0.0,255.0) as u8;
+  }
+ }
  if let Some(ref path)=cache {
   if let Some(parent)=path.parent(){
    if fs::create_dir_all(parent).is_ok(){
@@ -43,7 +53,7 @@ pub fn upscale(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>){
    }
   }
  }
- println!("4x spatial texture generated: {}x{} -> {}x{}",w,h,tw,th);
+ println!("4x Lanczos3 + 25% sharpening generated: {}x{} -> {}x{}",w,h,tw,th);
  (tw,th,enhanced.into_raw())
 }
 #[cfg(test)]
@@ -51,5 +61,11 @@ mod tests {
  use super::*;
  #[test]fn no_scaling_by_default(){assert_eq!(upscale(1,1,vec![3,4,5,6],1),(1,1,vec![3,4,5,6]));}
  #[test]fn fourfold_dimensions(){let (w,h,p)=upscale(2,2,vec![255;16],4);assert_eq!((w,h,p.len()),(8,8,256));}
+ #[test]fn preserves_alpha_values_at_corners(){
+  let (w,h,p)=upscale(2,2,vec![10,20,30,0, 30,40,50,255, 60,70,80,255, 90,100,110,0],4);
+  assert_eq!((w,h),(8,8));
+  assert_eq!(p[3],0);
+  assert_eq!(p[((7*8+7)*4+3) as usize],0);
+ }
  #[test]fn invalid_buffer_untouched(){assert_eq!(upscale(4,4,vec![1,2],4),(4,4,vec![1,2]));}
 }
