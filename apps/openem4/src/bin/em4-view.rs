@@ -295,11 +295,12 @@ fn append_model(target:&mut em4_formats::v3o_mesh::Mesh,source:em4_formats::v3o_
   for v in &mut verts {
    let p=v.position;let r=&a.rotation;
    let matrix=|row:usize,col:usize|if transpose_rotation{r[col*3+row]}else{r[row*3+col]};
-   // E4P translations are stored in centimetre-scale game coordinates.
+   // V3O coordinates are already converted in v3o_mesh; E4P attachment
+   // offsets are in the same working coordinate units and must not be divided again.
    v.position=[
-    matrix(0,0)*p[0]+matrix(0,1)*p[1]+matrix(0,2)*p[2]+a.position[0]/100.0,
-    matrix(1,0)*p[0]+matrix(1,1)*p[1]+matrix(1,2)*p[2]+a.position[1]/100.0,
-    matrix(2,0)*p[0]+matrix(2,1)*p[1]+matrix(2,2)*p[2]+a.position[2]/100.0,
+    matrix(0,0)*p[0]+matrix(0,1)*p[1]+matrix(0,2)*p[2]+a.position[0],
+    matrix(1,0)*p[0]+matrix(1,1)*p[1]+matrix(1,2)*p[2]+a.position[1],
+    matrix(2,0)*p[0]+matrix(2,1)*p[1]+matrix(2,2)*p[2]+a.position[2],
    ];
    let n=v.normal;
    v.normal=[matrix(0,0)*n[0]+matrix(0,1)*n[1]+matrix(0,2)*n[2],
