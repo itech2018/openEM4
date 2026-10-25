@@ -79,6 +79,7 @@ impl LightControls {
 #[derive(Clone)]
 struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String,axis:[f32;3],angle:f32,native:bool }
 struct EnhancedTexture { index:usize,w:u32,h:u32,pixels:Vec<u8> }
+struct EnhancementJob {index:usize,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
 fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,w:u32,h:u32,pixels:Vec<u8>)->Result<wgpu::BindGroup,String>{
  let levels=32-w.max(h).leading_zeros();
  let texture=device.create_texture(&wgpu::TextureDescriptor{label:Some("V3O texture"),
@@ -166,6 +167,18 @@ impl Viewer {
   let sampler=device.create_sampler(&wgpu::SamplerDescriptor{address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
    mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,mipmap_filter:wgpu::FilterMode::Linear,..Default::default()});
   let (enhance_tx,enhance_rx)=std::sync::mpsc::channel::<EnhancedTexture>();
+  let (job_tx,job_rx)=std::sync::mpsc::sync_channel::<EnhancementJob>(16);
+  let shared_jobs=std::sync::Arc::new(std::sync::Mutex::new(job_rx));
+  for _ in 0..2 {
+   let jobs=shared_jobs.clone();let complete=enhance_tx.clone();
+   std::thread::spawn(move||loop {
+    let job={let Ok(receiver)=jobs.lock()else{return};receiver.recv()};
+    let Ok(job)=job else{return};
+    let (w,h,pixels)=texture_upscale::upscale(job.w,job.h,job.pixels,job.scale);
+    if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{index:job.index,w,h,pixels});}
+    else{eprintln!("Enhancement skipped for {}",job.name);}
+   });
+  }
   let mut enhancement_total=0usize;
   let mut draws=Vec::new();
   for (i,surface) in mesh.surfaces.iter().enumerate(){
@@ -174,12 +187,11 @@ impl Viewer {
     let scale=if upscale_factor==4{4}else{texture_upscale::automatic_factor(&surface.texture,w,h,&pixels)};
     if scale>1 {
      enhancement_total+=1;
-     let tx=enhance_tx.clone();let input=pixels.clone();let name=surface.texture.clone();let index=i;
-     std::thread::spawn(move||{
-      let (nw,nh,output)=texture_upscale::upscale(w,h,input,scale);
-      if nw!=w||nh!=h{let _=tx.send(EnhancedTexture{index,w:nw,h:nh,pixels:output});}
-      else{eprintln!("Enhancement skipped for: {name}");}
-     });
+     let job=EnhancementJob{index:i,name:surface.texture.clone(),w,h,pixels:pixels.clone(),scale};
+     // Bounded queue: when busy, use the original texture rather than blocking
+     // loading or spawning unbounded threads.
+     if job_tx.try_send(job).is_err(){enhancement_total-=1;eprintln!("Enhancement queue full; keeping original {}",surface.texture);}
+
     }
    }
    let alpha:Vec<u8>=pixels.chunks_exact(4).map(|pixel|pixel[3]).collect();
@@ -196,6 +208,7 @@ impl Viewer {
    if count>0.0 {for x in &mut center{*x/=count;}}
    draws.push((ranges[i].clone(),group,material_kind,center));
   }
+  drop(job_tx);
   drop(enhance_tx);
   println!("Enhancement jobs queued: {}",enhancement_total);
   let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
