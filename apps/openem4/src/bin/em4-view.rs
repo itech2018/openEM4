@@ -639,11 +639,12 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      // Preserve the verified geometry hinge for off-centre cab/side doors.
      // Only try native horizontal-axis equipment when attached near the
      // vehicle centreline (typical rear ramp or tailgate).
-     let side_attachment=(child.position[1]-body_mid_side).abs()>body_half_width*0.30;
+     let lateral_span=max[1]-min[1];
+     let wide_equipment=lateral_span>body_half_width*1.20;
      let native_axis=child.door_axis.map(|a|[a[0],a[2],-a[1]]);
      let horizontal=native_axis.is_some_and(|a|a[1].abs()<0.5);
-     let use_native=horizontal&&!side_attachment&&child.open_angle.is_some();
-     let direction=if door_side>=body_mid_side{1.0}else{-1.0};
+     let use_native=horizontal&&wide_equipment&&child.open_angle.is_some();
+     let direction=if door_side>=0.0{1.0}else{-1.0};
      let pivot_x=if front_door{max[0]}else{min[0]};
      let fallback_pivot=[pivot_x,(min[2]+max[2])*0.5,-door_side];
      // A horizontal equipment hinge uses its actual E4P child origin; mesh
@@ -654,10 +655,10 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
      let angle=if use_native{child.open_angle.unwrap().to_radians()}
        else{direction*65.0f32.to_radians()};
      let native=use_native;
-     println!("Door {}: pivot {:?} axis {:?} angle {:.1} source {} side_offset {:.2}",
+     println!("Door {}: pivot {:?} axis {:?} angle {:.1} source {} lateral_span {:.2} body_half_width {:.2}",
        child.prototype,pivot,axis,angle.to_degrees(),
-       if native{"native horizontal equipment"}else{"verified side-door fallback"},
-       (child.position[1]-body_mid_side).abs());
+       if native{"native wide equipment"}else{"vertical side-door fallback"},
+       lateral_span,body_half_width);
      doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot,direction,prototype:child.prototype.clone(),axis,angle,native});
     }
     loaded+=1;
