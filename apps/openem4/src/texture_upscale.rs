@@ -12,6 +12,35 @@ pub fn cache_dir()->Option<PathBuf>{
  base.map(|p|p.join("openEM4").join("textures").join("automatic-v3"))
 }
 
+
+// Constrain automatic cache growth; never traverse or delete original game files.
+const CACHE_LIMIT_BYTES:u64=2*1024*1024*1024;
+pub fn prune_cache()->std::io::Result<(usize,u64)>{
+ let Some(dir)=cache_dir()else{return Ok((0,0))};
+ prune_cache_directory(&dir,CACHE_LIMIT_BYTES)
+}
+fn prune_cache_directory(dir:&std::path::Path,limit:u64)->std::io::Result<(usize,u64)>{
+ if !dir.exists(){return Ok((0,0))}
+ let mut entries=Vec::new();let mut used=0u64;
+ for entry in fs::read_dir(dir)?{
+  let entry=entry?;let path=entry.path();
+  if path.extension().and_then(|e|e.to_str())!=Some("png"){continue}
+  let metadata=fs::symlink_metadata(&path)?;
+  if !metadata.file_type().is_file(){continue}
+  let size=metadata.len();used=used.saturating_add(size);
+  let age=metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+  entries.push((age,path,size));
+ }
+ if used<=limit{return Ok((0,0))}
+ entries.sort_by_key(|item|item.0);
+ let target=limit.saturating_mul(9)/10;let(mut removed,mut freed)=(0,0u64);
+ for (_,path,size) in entries{
+  if used<=target{break}
+  if fs::remove_file(path).is_ok(){used=used.saturating_sub(size);removed+=1;freed+=size;}
+ }
+ Ok((removed,freed))
+}
+
 /// Deterministic, conservative enhancement policy. No per-mod tuning required.
 pub fn automatic_factor(name:&str,w:u32,h:u32,pixels:&[u8])->u32{
  if w==0||h==0||w>2048||h>2048||pixels.len()!=w as usize*h as usize*4{return 1}
@@ -81,6 +110,17 @@ fn upscale_with_factor(w:u32,h:u32,pixels:Vec<u8>,factor:u32)->(u32,u32,Vec<u8>)
 #[cfg(test)]
 mod tests {
  use super::*;
+ #[test]fn cache_prune_removes_oldest_without_touching_other_files(){
+  let dir=std::env::temp_dir().join(format!("openem4-prune-{}-{:?}",std::process::id(),std::thread::current().id()));
+  fs::create_dir_all(&dir).unwrap();
+  fs::write(dir.join("a.png"),vec![1u8;12]).unwrap();
+  fs::write(dir.join("b.png"),vec![2u8;12]).unwrap();
+  fs::write(dir.join("original.dds"),vec![3u8;12]).unwrap();
+  let (count,freed)=prune_cache_directory(&dir,15).unwrap();
+  assert!(count>=1&&freed>=12);
+  assert!(dir.join("original.dds").exists());
+  fs::remove_dir_all(dir).unwrap();
+ }
  #[test]fn auto_skips_data_and_transparency(){
   let rgba=vec![255u8;64*64*4];
   assert_eq!(automatic_factor("car_normal.dds",64,64,&rgba),1);
