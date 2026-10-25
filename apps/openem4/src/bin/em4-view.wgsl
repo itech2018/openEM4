@@ -22,3 +22,14 @@ struct VOut { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<
  let lighting = 0.58 + 0.42 * diffuse;
  return vec4<f32>(texel.rgb * lighting, texel.a);
 }
+
+@fragment fn fs_cutout(v: VOut) -> @location(0) vec4<f32> {
+ if (camera.debug.x != 0u) {
+  return vec4<f32>(normalize(v.normal) * 0.5 + vec3<f32>(0.5), 1.0);
+ }
+ let texel=textureSample(color_texture,color_sampler,v.uv);
+ if (texel.a < 0.5) { discard; }
+ let n=normalize(v.normal + vec3<f32>(0.00001,0.00001,0.00001));
+ let diffuse=max(dot(n,normalize(vec3<f32>(0.4,0.85,0.45))),0.0);
+ return vec4<f32>(texel.rgb * (0.58 + 0.42 * diffuse),1.0);
+}
