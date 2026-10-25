@@ -78,7 +78,7 @@ impl LightControls {
 }
 #[derive(Clone)]
 struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3],direction:f32,prototype:String,axis:[f32;3],angle:f32,native:bool }
-struct EnhancedTexture { indices:Vec<usize>,w:u32,h:u32,pixels:Vec<u8> }
+struct EnhancedTexture { indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,w:u32,h:u32,pixels:Vec<u8> }
 struct EnhancementJob {indices:std::sync::Arc<std::sync::Mutex<Vec<usize>>>,name:String,w:u32,h:u32,pixels:Vec<u8>,scale:u32}
 fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,w:u32,h:u32,pixels:Vec<u8>)->Result<wgpu::BindGroup,String>{
  let levels=32-w.max(h).leading_zeros();
@@ -175,7 +175,7 @@ impl Viewer {
     let job={let Ok(receiver)=jobs.lock()else{return};receiver.recv()};
     let Ok(job)=job else{return};
     let (w,h,pixels)=texture_upscale::upscale(job.w,job.h,job.pixels,job.scale);
-    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
+    let indices=job.indices;
     if w!=job.w||h!=job.h{let _=complete.send(EnhancedTexture{indices,w,h,pixels});}
     else{let _=complete.send(EnhancedTexture{indices,w:0,h:0,pixels:Vec::new()});eprintln!("Enhancement skipped for {}",job.name);}
    });
@@ -381,7 +381,8 @@ impl Viewer {
    if result.w==0||result.h==0 {return false;}
    if let Ok(new_group)=material_group(&self.device,&self.queue,&self.material_layout,&self.material_sampler,result.w,result.h,result.pixels){
     let mut count=0;
-    for index in result.indices {
+    let indices=result.indices.lock().map(|v|v.clone()).unwrap_or_default();
+    for index in indices {
      if let Some(draw)=self.draws.get_mut(index){
       draw.1=new_group.clone();changed=true;count+=1;
      }
