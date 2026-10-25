@@ -74,6 +74,8 @@ impl LightControls {
    u32::from(indicator&&(self.left||self.right)),u32::from(self.beacon&&emergency)]
  }
 }
+#[derive(Clone)]
+struct DoorPreview { range:std::ops::Range<usize>,pivot:[f32;3] }
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
@@ -82,10 +84,10 @@ struct Viewer {
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
- lights:LightControls,started:Instant,
+ lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_open:bool,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light])->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
@@ -284,7 +286,7 @@ impl Viewer {
    multisample:Default::default(),multiview:None
   });
   let vertex_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-   label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX});
+   label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST});
   let index_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("V3O triangles"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
   // Flat reference plane positioned just below the loaded geometry.
@@ -314,7 +316,25 @@ impl Viewer {
     wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&sampler)}]});
   let depth=depth(&device,config.width,config.height);
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now()})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,lights:LightControls::default(),started:Instant::now(),doors,closed_vertices:vertices,door_open:false})
+ }
+ fn toggle_doors(&mut self){
+  self.door_open=!self.door_open;
+  let mut verts=self.closed_vertices.clone();
+  let angle=if self.door_open{65.0f32.to_radians()}else{0.0};
+  let (sn,cs)=angle.sin_cos();
+  for door in &self.doors {
+   // Provisional viewer-only hinge at E4P child anchor, rotates about vertical Y.
+   for v in &mut verts[door.range.clone()]{
+    let x=v.pos[0]-door.pivot[0];let z=v.pos[2]-door.pivot[2];
+    v.pos[0]=door.pivot[0]+cs*x-sn*z;
+    v.pos[2]=door.pivot[2]+sn*x+cs*z;
+    let nx=v.normal[0];let nz=v.normal[2];
+    v.normal[0]=cs*nx-sn*nz;v.normal[2]=sn*nx+cs*nz;
+   }
+  }
+  self.queue.write_buffer(&self.vertices,0,bytemuck::cast_slice(&verts));
+  println!("Door preview: {} ({} doors)",if self.door_open{"OPEN"}else{"CLOSED"},self.doors.len());
  }
  fn resize(&mut self,w:u32,h:u32){
   if w==0||h==0{return;}self.config.width=w;self.config.height=h;
@@ -533,13 +553,14 @@ fn append_model(target:&mut em4_formats::v3o_mesh::Mesh,source:em4_formats::v3o_
   target.triangles.push(t);
  }
 }
-fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_mesh::Mesh,std::path::PathBuf),Box<dyn std::error::Error>>{
+fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_mesh::Mesh,std::path::PathBuf,Vec<DoorPreview>),Box<dyn std::error::Error>>{
  let root=data_root(path)?;
  let prototype=em4_formats::e4p_assembly::parse_file(path)?;
  let body=prototype.body_model.ok_or("E4P does not contain a readable body ModelName")?;
  let body_path=resolve_game_ref(&root,&body).ok_or("Main V3O model reference cannot be located in Data")?;
  let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(&body_path)?)?;
  let mut loaded=0usize;
+ let mut doors=Vec::new();
  for child in &prototype.attachments {
   println!("Attachment {}: ({:.2}, {:.2}, {:.2}) original units, rotation {:?}", child.prototype,child.position[0],child.position[1],child.position[2],child.rotation);
   let Some(p)=resolve_game_ref(&root,&child.prototype)else{
@@ -559,20 +580,25 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
       let tex=std::path::Path::new(&surface.texture);
       if !tex.is_absolute() && !surface.texture.contains("..") {surface.texture=dir.join(tex).to_string_lossy().into_owned();}
     }}
-    append_model(&mut mesh,part,Some(child),transpose_rotation);loaded+=1;
+    let start=mesh.vertices.len();
+    append_model(&mut mesh,part,Some(child),transpose_rotation);
+    if child.category=="door" {
+     doors.push(DoorPreview{range:start..mesh.vertices.len(),pivot:[child.position[0],child.position[2],-child.position[1]]});
+    }
+    loaded+=1;
    },
    Err(err)=>eprintln!("Child model failed {}: {err}",model_path.display()),
   }
  }
  println!("Resolved {} of {} child attachment(s)",loaded,prototype.attachments.len());
- Ok((mesh,body_path))
+ Ok((mesh,body_path,doors))
 }
 
 fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
- let (mesh,body_path)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+ let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   load_vehicle(&path,transpose_rotation)?
  }else{(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,path.clone())};
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
@@ -583,7 +609,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  em4_formats::e4p_lights::parse(&fs::read(&path)?)
 }else{Vec::new()};
  for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
@@ -625,6 +651,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
        PhysicalKey::Code(KeyCode::KeyB)=>{viewer.lights.brake=!viewer.lights.brake;println!("Brake lights: {}",viewer.lights.brake);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyL)=>{viewer.lights.left=!viewer.lights.left;println!("Left indicator: {}",viewer.lights.left);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyK)=>{viewer.lights.right=!viewer.lights.right;println!("Right indicator: {}",viewer.lights.right);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyD)=>{viewer.toggle_doors();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyO)=>{viewer.corona_occlusion=!viewer.corona_occlusion;println!("Corona depth occlusion: {}",viewer.corona_occlusion);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyE)=>{viewer.lights.beacon=!viewer.lights.beacon;println!("Beacon: {}",viewer.lights.beacon);window.request_redraw();},
        _=>{}
