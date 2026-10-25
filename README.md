@@ -100,3 +100,7 @@ cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapp
 The flag alters only the child attachment rotation, not the main vehicle geometry. It is a diagnostic comparison, not a confirmed Emergency 4 matrix convention. For unchanged transforms, omit the flag. Both paths read original game data without writing to it.
 
 **Still pending:** GPU attachment-point gizmos, animation, full wheel rig, and verified local transform composition. Wrong wheel placements require screenshots/console diagnostics.
+
+## ASF wheel-placement scale correction
+
+The original ASF E4P wheel positions use offsets approximately X=+98/+96 for one axle and X=-58/-56 for the other (Y around +/-40, Z around 21). The previous viewer erroneously divided E4P attachment translations by 100 while V3O vertex coordinates were already converted into the viewer's working units. The assembler now preserves the E4P offsets directly. This is based on the ASF model and needs visual confirmation with other prototypes. The `--transpose-attachment-rotation` comparison option remains available for rotation diagnostics.
