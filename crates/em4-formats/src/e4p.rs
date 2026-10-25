@@ -23,10 +23,18 @@ fn extensions(s:&str)->Vec<String> {
 pub fn inspect(bytes:&[u8])->io::Result<PrototypeReport> {
  if bytes.len()>MAX{return Err(err("E4P file exceeds 16 MiB research limit"));}
  let mut encoding="binary_or_unknown";
+ let mut unpacked:Option<Vec<u8>>=None;
+ if bytes.len()>=20 && bytes[..4]==0x1337C0D3u32.to_le_bytes() {
+  match crate::v3o_packed::unpack(bytes) {
+   Ok(content)=>{unpacked=Some(content);encoding="packed_zlib_text_candidate";},
+   Err(e)=>{eprintln!("E4P appears packed, but V3O unpacker rejected it: {e}");}
+  }
+ }
+ let bytes_to_read=unpacked.as_deref().unwrap_or(bytes);
  let mut text=String::new();
- if let Ok(s)=std::str::from_utf8(bytes){
+ if let Ok(s)=std::str::from_utf8(bytes_to_read){
   if !s.contains('\0')&&s.chars().filter(|c|c.is_control()&&!c.is_whitespace()).count()<16 {
-   encoding="utf8_text_candidate"; text=s.to_string();
+   if unpacked.is_none(){encoding="utf8_text_candidate";} text=s.to_string();
   }
  }
  let candidates=extensions(&text);
