@@ -29,7 +29,7 @@ pub fn parse(bytes:&[u8])->Vec<Light>{
  let mut out=Vec::new();let mut at=0;
  while at+12<bytes.len(){
   let Some((name,end))=field(bytes,at)else{at+=1;continue};
-  if name!="light" || u32_at(bytes,end)!=2 {at+=1;continue}
+  if name!="light" || u32_at(bytes,end)!=Some(2) {at+=1;continue}
   let mut light=Light{points:Vec::new(),position:[0.;3],corona_texture:String::new(),
    flash_frequency:0.,flash_offset:0.,corona_size:0.,light_type:0,color:0xffffffff};
   let mut pos=[None,None,None];
