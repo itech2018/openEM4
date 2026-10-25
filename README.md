@@ -68,3 +68,21 @@ cargo run -p openem4 --bin em4-e4p-inspect -- "C:\\path\\to\\vehicle.e4p"
 ```
 
 This research CLI checks whether the file is readable text and lists candidate V3O/E4P path references. It does not yet parse binary prototypes, wheel placement, commands, or vehicle hierarchy. Do not assume it can reconstruct the full vehicle.
+
+## Prototype-based vehicle assembly (experimental)
+
+Use the existing viewer with an `.e4p` path:
+
+```powershell
+cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Data\\Prototypes\\Vehicles\\TEC\\asf.e4p"
+```
+
+Or inspect attachment references and positions as JSON:
+
+```powershell
+cargo run -p openem4 --bin em4-assembly -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Data\\Prototypes\\Vehicles\\TEC\\asf.e4p"
+```
+
+This is an experimental **first assembly pass**: reads the body `ModelName`, locates positioned wheel/door `Filename` records and their `PosX/PosY/PosZ/Rotation` fields, and resolves related child prototypes and V3O assets underneath the game `Data` directory. Geometry is combined in a shared mesh before rendering. Missing components are reported.
+
+Limits: transform units and rotation conventions are provisional; child material texture directories may differ, and this stage does not implement door animation, wheel steering, lights, physics, nested children or a complete E4P parser. The original assets are not modified.
