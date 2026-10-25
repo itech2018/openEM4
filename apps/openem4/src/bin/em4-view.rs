@@ -108,7 +108,7 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
 
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
- pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,wgpu::BindGroup,u8,[f32;3])>,
+ pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,Arc<wgpu::BindGroup>,u8,[f32;3])>,
  uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
@@ -226,7 +226,7 @@ impl Viewer {
     for &v in &t.indices {let p=vertices[v as usize].pos;for axis in 0..3{center[axis]+=p[axis];}count+=1.0;}
    }
    if count>0.0 {for x in &mut center{*x/=count;}}
-   draws.push((ranges[i].clone(),group,material_kind,center));
+   draws.push((ranges[i].clone(),Arc::new(group),material_kind,center));
   }
   // Rank pending textures against the initial camera view rather than V3O
   // file order. Each shared job uses the best visible associated surface.
@@ -419,6 +419,7 @@ impl Viewer {
     return false;
    }
    if let Ok(new_group)=material_group(&self.device,&self.queue,&self.material_layout,&self.material_sampler,result.w,result.h,result.pixels){
+    let new_group=Arc::new(new_group);
     let mut count=0;
     let indices=result.indices.lock().map(|v|v.clone()).unwrap_or_default();
     for index in indices {
@@ -522,7 +523,7 @@ impl Viewer {
    pass.set_pipeline(&self.pipeline);
    for (range,material,kind,_) in &self.draws {
     if *kind!=0 {continue;}
-    pass.set_bind_group(1,material,&[]);pass.draw_indexed(range.clone(),0,0..1);
+    pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
    pass.set_pipeline(&self.cutout_pipeline);
    for (range,material,kind,_) in &self.draws {
@@ -702,7 +703,7 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
  let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(&body_path)?)?;
  let body_side_min=mesh.vertices.iter().map(|v|v.position[1]).fold(f32::INFINITY,f32::min);
  let body_side_max=mesh.vertices.iter().map(|v|v.position[1]).fold(f32::NEG_INFINITY,f32::max);
- let body_mid_side=(body_side_min+body_side_max)*0.5;
+ let _body_mid_side=(body_side_min+body_side_max)*0.5;
  let body_half_width=(body_side_max-body_side_min)*0.5;
  let mut loaded=0usize;
  let mut doors=Vec::new();
