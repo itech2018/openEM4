@@ -34,3 +34,11 @@ This currently identifies packed/text V3O candidates, opaque E4P/E4M files and D
 `cargo run -p openem4 --bin em4-texture -- "C:\\path\\texture.dds" preview.png`
 
 Supports DXT1, DXT3 and DXT5 (first mip); see `docs/FORMATS.md`. Packed V3O mesh parsing is still research work.
+
+## 3D V3O viewer (experimental)
+
+```powershell
+cargo run -p openem4 --bin em4-view -- "C:\\Program Files (x86)\\Steam\\steamapps\\common\\EMERGENCY 4 Deluxe\\Data\\Models\\Vehicles\\TEC\\asf.V3O"
+```
+
+Mouse controls: **left-drag** orbit, **right-drag** pan, **wheel** zoom, **R** reset. This loads supported packed V3O geometry and renders shaded, untextured triangles with a depth buffer. Material textures, normal correctness, UV scaling, orientation and full model compatibility still require verification. The original file is only read; never changed.
