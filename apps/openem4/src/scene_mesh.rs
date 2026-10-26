@@ -56,6 +56,19 @@ pub fn combine_entities(objects:Vec<(crate::scene_entities::SceneEntity,Mesh)>)-
  }
  combine_v3o(transformed)
 }
+/// EM4 Z-up translations applied by combine_v3o to each source model.
+pub fn preview_layout_offsets(models:&[Mesh])->Vec<[f32;3]>{
+ let mut cursor=0.0f32;
+ models.iter().map(|model|{
+  let min_x=model.vertices.iter().map(|v|v.position[0]).fold(f32::INFINITY,f32::min);
+  let max_x=model.vertices.iter().map(|v|v.position[0]).fold(f32::NEG_INFINITY,f32::max);
+  let min_y=model.vertices.iter().map(|v|v.position[1]).fold(f32::INFINITY,f32::min);
+  let max_y=model.vertices.iter().map(|v|v.position[1]).fold(f32::NEG_INFINITY,f32::max);
+  let offset=[cursor-min_x,-(min_y+max_y)*0.5,0.0];
+  cursor+=(max_x-min_x).max(max_y-min_y).max(1.0)*1.3;
+  offset
+ }).collect()
+}
 pub fn combine_v3o(models:Vec<Mesh>)->Result<Mesh,String>{
  if models.is_empty()||models.len()>16{return Err("scene must contain 1..=16 models".into());}
  let mut out=Mesh{version:"1.43".into(),vertices:Vec::new(),triangles:Vec::new(),surfaces:Vec::new()};
