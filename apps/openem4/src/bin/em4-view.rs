@@ -129,6 +129,7 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
  ]}))
 }
 
+struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,Arc<wgpu::BindGroup>,u8,[f32;3])>,
@@ -138,7 +139,7 @@ struct Viewer {
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
- scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,selected_scene:usize,
+ scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,next_instance_id:u64,selected_scene:usize,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -470,7 +471,7 @@ impl Viewer {
   }).collect::<Vec<_>>();
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,scene_uniforms,scene_binds,draw_scene_ids,scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),next_instance_id:scene_ranges.len() as u64+1,scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -767,6 +768,23 @@ impl Viewer {
      pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
     }
    }
+   // Runtime instances reuse source mesh GPU buffers and material bind groups.
+   // These are separate draw calls, with their own model transform uniforms.
+   for kind in 0..=2u8 {
+    let pipeline=match kind{0=>&self.pipeline,1=>&self.cutout_pipeline,_=>&self.transparent_pipeline};
+    pass.set_pipeline(pipeline);
+    for instance in &self.scene_instances {
+     for (i,(range,material,material_kind,_)) in self.draws.iter().enumerate(){
+      if *material_kind!=kind||self.draw_scene_ids[i]!=instance.source+1{continue;}
+      pass.set_bind_group(2,&instance.bind,&[]);
+      pass.set_bind_group(1,material.as_ref(),&[]);
+      pass.set_vertex_buffer(0,self.object_vertices[instance.source].slice(..));
+      pass.set_index_buffer(self.object_indices[instance.source].slice(..),wgpu::IndexFormat::Uint32);
+      let _=range;
+      pass.draw_indexed(self.object_draw_ranges[i].clone(),0,0..1);
+     }
+    }
+   }
    pass.set_bind_group(2,&self.scene_binds[0],&[]);
    // Data-driven diagnostic markers: position, colour and pulse from source E4P.
    let t=self.started.elapsed().as_secs_f32();
@@ -807,6 +825,31 @@ impl Viewer {
   self.scene_yaws[self.selected_scene]=(self.scene_yaws[self.selected_scene]+degrees).rem_euclid(360.0);
   self.update_scene_entity_vertices();
   println!("Scene entity {} yaw: {:.1}°",self.selected_scene+1,self.scene_yaws[self.selected_scene]);
+ }
+ fn spawn_selected_instance(&mut self){
+  let source=self.selected_scene;
+  if source>=self.scene_ranges.len()||self.scene_instances.len()>=64{return;}
+  let id=self.next_instance_id;self.next_instance_id+=1;
+  let offset=[self.scene_offsets[source][0]+3.0,self.scene_offsets[source][1],self.scene_offsets[source][2]];
+  let yaw=self.scene_yaws[source];
+  let model=model_matrix(offset,yaw,self.scene_pivots[source]);
+  let uniform=self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+   label:Some("runtime scene instance"),contents:bytemuck::bytes_of(&ObjectUniform{model}),
+   usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST
+  });
+  // Match the pre-existing per-object transform layout, recovered from its bind
+  // by retaining the layout separately in the viewer.
+  let bind=self.device.create_bind_group(&wgpu::BindGroupDescriptor{
+   label:Some("runtime scene instance bind"),layout:&self.object_layout,
+   entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]
+  });
+  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,uniform,bind});
+  println!("Spawned instance {id} from scene object {}",source+1);
+ }
+ fn remove_latest_instance(&mut self){
+  if let Some(instance)=self.scene_instances.pop(){
+   println!("Removed runtime instance {}",instance.id);
+  }
  }
  fn select_next_scene_entity(&mut self){
   if !self.scene_ranges.is_empty(){
@@ -1149,6 +1192,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
+       PhysicalKey::Code(KeyCode::KeyN)=>{viewer.spawn_selected_instance();window.request_redraw();},
+       PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_latest_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyQ)=>{viewer.rotate_scene_entity(-15.0);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyT)=>{viewer.rotate_scene_entity(15.0);window.request_redraw();},
        PhysicalKey::Code(KeyCode::Tab)=>{viewer.select_next_scene_entity();window.request_redraw();},
