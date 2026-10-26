@@ -341,3 +341,9 @@ Mixed V3O scene objects that move or rotate using GPU model transforms now repor
 ## Object-addressable index buffers (scene renderer transition)
 
 Mixed `--add-v3o` scenes now build a separate GPU index stream for each V3O object. Opaque, cutout and transparent draw passes bind that object's index buffer and associated material-specific index range, alongside its existing per-entity model transform. The viewer keeps decoded vertices in a shared GPU vertex buffer for now; it therefore does **not** yet have completely independent vertex allocations or draw-object lifecycles. Original single-model and E4P rendering continue using the prior shared index stream, protecting existing door, recovery-ramp and light previews. Content-addressed material sharing and texture streaming remain unchanged. Validate locally with the working Astra/Barclays `--add-v3o` command and `cargo test -p openem4 --bin em4-view`. This update has not been independently compiled or visually verified.
+
+## Independent scene-object vertex and index buffers
+
+Mixed `--add-v3o` scenes now upload a separate vertex buffer for each scene object and use object-local indices in its per-object index buffer. Opaque, cutout and transparent passes bind the corresponding object's vertex buffer, index buffer and GPU model transform. Original single-V3O and E4P prototypes retain their established shared geometry path to protect door, ramp and light animation. GPU materials remain deduplicated across objects through `material_registry.rs`.
+
+This is a renderer milestone, not full scene lifecycle support: loading still assembles a temporary combined CPU mesh, and object creation/destruction, object-specific animation state and true independent E4P vehicles remain future work. Compilation and visual validation on Windows are required.
