@@ -28,6 +28,16 @@ impl Vertex {
 #[repr(C)]
 #[derive(Clone,Copy,bytemuck::Pod,bytemuck::Zeroable)]
 struct Uniform { matrix:[[f32;4];4], debug:[u32;4] }
+#[repr(C)]
+#[derive(Clone,Copy,bytemuck::Pod,bytemuck::Zeroable)]
+struct ObjectUniform { model:[[f32;4];4] }
+fn model_matrix(offset:[f32;3],yaw:f32,pivot:[f32;3])->[[f32;4];4]{
+ let (sn,cs)=yaw.to_radians().sin_cos();
+ let (cx,cz)=(pivot[0],pivot[2]);
+ [ [cs,0.0,-sn,0.0],[0.0,1.0,0.0,0.0],[sn,0.0,cs,0.0],
+   [cx-cs*cx-sn*cz+offset[0],offset[1],cz+sn*cx-cs*cz+offset[2],1.0] ]
+}
+fn identity_matrix()->[[f32;4];4]{model_matrix([0.0;3],0.0,[0.0;3])}
 #[derive(Clone,Copy)]
 struct Camera {yaw:f32,pitch:f32,distance:f32,target:[f32;3]}
 impl Camera {
@@ -128,7 +138,7 @@ struct Viewer {
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
- scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,selected_scene:usize,
+ scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,selected_scene:usize,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -192,6 +202,30 @@ impl Viewer {
     wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::FRAGMENT,
      ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
    ]});
+  let object_layout=device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+   label:Some("object transform bind layout"),entries:&[wgpu::BindGroupLayoutEntry{
+    binding:0,visibility:wgpu::ShaderStages::VERTEX,
+    ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None
+   }]
+  });
+  let mut scene_pivots=Vec::new();
+  for range in &scene_ranges {
+   let points=&vertices[range.clone()];
+   let (mut min_x,mut max_x,mut min_z,mut max_z)=(f32::INFINITY,f32::NEG_INFINITY,f32::INFINITY,f32::NEG_INFINITY);
+   for v in points{min_x=min_x.min(v.pos[0]);max_x=max_x.max(v.pos[0]);min_z=min_z.min(v.pos[2]);max_z=max_z.max(v.pos[2]);}
+   scene_pivots.push([(min_x+max_x)*0.5,0.0,(min_z+max_z)*0.5]);
+  }
+  let mut scene_uniforms=Vec::new();let mut scene_binds=Vec::new();
+  // Index zero is the identity transform for ground, markers and E4P.
+  for _ in 0..=scene_ranges.len() {
+   let buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+    label:Some("object model uniform"),contents:bytemuck::bytes_of(&ObjectUniform{model:identity_matrix()}),
+    usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST
+   });
+   let group=device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("object model bind"),layout:&object_layout,
+    entries:&[wgpu::BindGroupEntry{binding:0,resource:buffer.as_entire_binding()}]});
+   scene_uniforms.push(buffer);scene_binds.push(group);
+  }
   let sampler=device.create_sampler(&wgpu::SamplerDescriptor{address_mode_u:wgpu::AddressMode::Repeat,address_mode_v:wgpu::AddressMode::Repeat,
    mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,mipmap_filter:wgpu::FilterMode::Linear,..Default::default()});
   let (enhance_tx,enhance_rx)=std::sync::mpsc::channel::<EnhancedTexture>();
@@ -263,7 +297,7 @@ impl Viewer {
     let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{
    label:Some("V3O shader"),source:wgpu::ShaderSource::Wgsl(include_str!("em4-view.wgsl").into())});
   let pipeline_layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
-   label:None,bind_group_layouts:&[&layout,&material_layout],push_constant_ranges:&[]});
+   label:None,bind_group_layouts:&[&layout,&material_layout,&object_layout],push_constant_ranges:&[]});
   let make_pipeline=|mode:u8|device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
    label:Some(if mode==2{"V3O transparent pipeline"}else if mode==1{"V3O cutout pipeline"}else{"V3O opaque pipeline"}),
    layout:Some(&pipeline_layout),
@@ -402,9 +436,13 @@ impl Viewer {
   let depth=depth(&device,config.width,config.height);
   let baseline_texture_bytes=material_registry.estimated_bytes();
   println!("Base unique textures: {} GPU uploads, {} surfaces reused; ~{} MiB estimate; enhancement allowance {} MiB",material_registry.unique_count(),material_registry.reused_count(),baseline_texture_bytes/1048576,enhancement_budget_mib);
+  let draw_scene_ids=(0..mesh.surfaces.len()).map(|surface|{
+   let first_vertex=mesh.triangles.iter().find(|t|t.surface_index==surface).map(|t|t.indices[0] as usize);
+   first_vertex.and_then(|v|scene_ranges.iter().position(|r|r.contains(&v))).map(|id|id+1).unwrap_or(0)
+  }).collect::<Vec<_>>();
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,scene_uniforms,scene_binds,draw_scene_ids,scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -628,7 +666,7 @@ impl Viewer {
     depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{
      view:&self.depth.view,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(1.0),store:wgpu::StoreOp::Store}),
      stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None});
-   pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);
+   pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);pass.set_bind_group(2,&self.scene_binds[0],&[]);
    pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
    if self.show_ground {
     pass.set_bind_group(1,&self.ground_material,&[]);
@@ -639,9 +677,9 @@ impl Viewer {
    pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
    // Stable opaque/cutout passes; blended batches sorted back-to-front each frame.
    pass.set_pipeline(&self.pipeline);
-   for (range,material,kind,_) in &self.draws {
+   for (i,(range,material,kind,_)) in self.draws.iter().enumerate() {
     if *kind!=0 {continue;}
-    pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
    pass.set_pipeline(&self.cutout_pipeline);
    for (range,material,kind,_) in &self.draws {
@@ -659,8 +697,10 @@ impl Viewer {
    pass.set_pipeline(&self.transparent_pipeline);
    for i in blended {
     let (range,material,_,_)=&self.draws[i];
+    pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);
     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
+   pass.set_bind_group(2,&self.scene_binds[0],&[]);
    // Data-driven diagnostic markers: position, colour and pulse from source E4P.
    let t=self.started.elapsed().as_secs_f32();
    pass.set_pipeline(if self.corona_occlusion{&self.occluded_marker_pipeline}else{&self.marker_pipeline});
@@ -684,27 +724,10 @@ impl Viewer {
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
  fn update_scene_entity_vertices(&mut self){
-  let Some(range)=self.scene_ranges.get(self.selected_scene).cloned()else{return;};
-  if range.end>self.closed_vertices.len()||range.is_empty(){return;}
-  let original=&self.closed_vertices[range.clone()];
-  // Rotate about the object's own initial XZ bounding-box centre.
-  let min_x=original.iter().map(|v|v.pos[0]).fold(f32::INFINITY,f32::min);
-  let max_x=original.iter().map(|v|v.pos[0]).fold(f32::NEG_INFINITY,f32::max);
-  let min_z=original.iter().map(|v|v.pos[2]).fold(f32::INFINITY,f32::min);
-  let max_z=original.iter().map(|v|v.pos[2]).fold(f32::NEG_INFINITY,f32::max);
-  let (cx,cz)=((min_x+max_x)*0.5,(min_z+max_z)*0.5);
-  let (sn,cs)=self.scene_yaws[self.selected_scene].to_radians().sin_cos();
-  let offset=self.scene_offsets[self.selected_scene];
-  let mut updated=original.to_vec();
-  for v in &mut updated {
-   let x=v.pos[0]-cx;let z=v.pos[2]-cz;
-   v.pos[0]=cx+cs*x+sn*z+offset[0];
-   v.pos[1]+=offset[1];
-   v.pos[2]=cz-sn*x+cs*z+offset[2];
-   let nx=v.normal[0];let nz=v.normal[2];
-   v.normal[0]=cs*nx+sn*nz;v.normal[2]=-sn*nx+cs*nz;
-  }
-  self.queue.write_buffer(&self.vertices,(range.start*std::mem::size_of::<Vertex>()) as u64,bytemuck::cast_slice(&updated));
+  let id=self.selected_scene;
+  if id>=self.scene_pivots.len(){return;}
+  let model=model_matrix(self.scene_offsets[id],self.scene_yaws[id],self.scene_pivots[id]);
+  self.queue.write_buffer(&self.scene_uniforms[id+1],0,bytemuck::bytes_of(&ObjectUniform{model}));
  }
  fn move_scene_entity(&mut self,axis:usize,amount:f32){
   if self.scene_ranges.get(self.selected_scene).is_none()||axis>=3{return;}
