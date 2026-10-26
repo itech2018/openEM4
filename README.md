@@ -323,3 +323,7 @@ This is **runtime translation** using per-object vertex-buffer ranges, *not yet 
 ## Mixed-scene blank view diagnostic
 
 Mixed V3O models can have much larger geometry extents than a standalone vehicle. The viewer now adjusts its far clipping plane from the current camera distance rather than using a fixed projection depth, and prints world-space scene bounds and camera distance. This targets the blank grey viewport seen when previewing London Mod `astra01.v3o` with `Barclays.v3o`; it does not yet verify that the particular source meshes have reasonable bounds. If the preview remains blank, share the `Scene bounds` log line and the renderer diagnostic lines so model coordinate scales can be inspected. This patch has not been independently run with those London Mod assets.
+
+## Mixed-scene runtime rotation
+
+With multiple V3O files loaded using `--add-v3o`, select an entity with **Tab**, translate it with the arrow/Page keys, and use **Q** (rotate -15°) or **T** (rotate +15°) to rotate the selected object around its initial bounding-box centre. Positions and normals are transformed from retained initial geometry on every edit to prevent cumulative drift; only that entity's vertex-buffer range is updated. This is a preview-side vertex update, **not yet per-object shader transform matrices**. The E4P animated vehicle path is unchanged. Compilation and interactive validation are still required.
