@@ -40,6 +40,22 @@ pub fn repeated_v3o(mut mesh:Mesh,count:usize)->Result<Mesh,String>{
 /// Merge heterogeneous V3O meshes into one preview scene. Each instance has its
 /// own surfaces, ensuring original per-model texture paths can be resolved.
 /// The renderer's content-addressed registry still shares matching GPU textures.
+/// Assemble identified scene objects, applying each object's own transform
+/// before temporary preview layout. Scene IDs are logged by the caller.
+pub fn combine_entities(objects:Vec<(crate::scene_entities::SceneEntity,Mesh)>)->Result<Mesh,String>{
+ let mut transformed=Vec::with_capacity(objects.len());
+ let mut ids=std::collections::HashSet::new();
+ for (entity,mut mesh) in objects{
+  if !ids.insert(entity.id){return Err("duplicate scene entity ID".into())}
+  entity.transform.validate()?;
+  for vertex in &mut mesh.vertices{
+   vertex.position=entity.transform.apply_position(vertex.position);
+   vertex.normal=entity.transform.apply_normal(vertex.normal);
+  }
+  transformed.push(mesh);
+ }
+ combine_v3o(transformed)
+}
 pub fn combine_v3o(models:Vec<Mesh>)->Result<Mesh,String>{
  if models.is_empty()||models.len()>16{return Err("scene must contain 1..=16 models".into());}
  let mut out=Mesh{version:"1.43".into(),vertices:Vec::new(),triangles:Vec::new(),surfaces:Vec::new()};
