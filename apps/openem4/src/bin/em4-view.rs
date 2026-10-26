@@ -499,7 +499,7 @@ impl Viewer {
   let forward=normalize(sub(self.camera.target,eye));
   let score=|triangles:usize,job:&EnhancementJob|->f32{
    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
-   let proximity=indices.iter().filter_map(|&index|self.draws.get(index)).map(|draw|{
+   let proximity=indices.iter().filter(|&&index|index<self.draws.len()).map(|&index|{
     let toward=sub(self.scene_draw_center(index),eye);let distance=dot(toward,toward).sqrt().max(1.0);
     let facing=dot(normalize(toward),forward);
     (0.1+0.9*((facing-0.15)/0.85).clamp(0.0,1.0))/distance
