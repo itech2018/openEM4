@@ -648,7 +648,7 @@ impl Viewer {
   }else{self.selected_scene};
   let Some(state)=self.scene_doors.get_mut(source)else{return;};
   if state.doors.is_empty(){println!("Selected model has no E4P doors");return;}
-  let targets=(0..state.doors.len()).filter(|&i|self.selected_door.is_none_or(|selected|selected==i)).collect::<Vec<_>>();
+  let targets=(0..state.doors.len()).filter(|&i|self.selected_door.map_or(true,|selected|selected==i)).collect::<Vec<_>>();
   let opening=targets.iter().any(|&i|!state.targets[i]);
   for i in targets{state.targets[i]=opening;}
   println!("Source vehicle {} door target: {}",source+1,if opening{"OPEN"}else{"CLOSED"});
@@ -1393,7 +1393,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    viewer.queue_evicted_restorations();
    viewer.dispatch_enhancements();
    let dt=Instant::now().duration_since(viewer.last_door_tick).as_secs_f32().min(0.1);
-   let door_moving=viewer.tick_doors()|viewer.tick_scene_doors(dt);
+   let scene_door_moving=viewer.tick_scene_doors(dt);
+   let door_moving=viewer.tick_doors()||scene_door_moving;
    if upgraded||door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
   }
   if let Event::WindowEvent{window_id,event}=event {
