@@ -123,10 +123,11 @@ struct Viewer {
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
+ scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,selected_scene:usize,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32)->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32,scene_ranges:Vec<std::ops::Range<usize>>)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
@@ -397,7 +398,7 @@ impl Viewer {
   println!("Base unique textures: {} GPU uploads, {} surfaces reused; ~{} MiB estimate; enhancement allowance {} MiB",material_registry.unique_count(),material_registry.reused_count(),baseline_texture_bytes/1048576,enhancement_budget_mib);
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -676,6 +677,23 @@ impl Viewer {
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
+ fn move_scene_entity(&mut self,axis:usize,amount:f32){
+  let Some(range)=self.scene_ranges.get(self.selected_scene).cloned()else{return;};
+  if axis>=3||range.end>self.closed_vertices.len()||range.is_empty(){return;}
+  self.scene_offsets[self.selected_scene][axis]+=amount;
+  let offset=self.scene_offsets[self.selected_scene];
+  let mut updated=self.closed_vertices[range.clone()].to_vec();
+  for v in &mut updated {for k in 0..3{v.pos[k]+=offset[k];}}
+  let byte_offset=(range.start*std::mem::size_of::<Vertex>()) as u64;
+  self.queue.write_buffer(&self.vertices,byte_offset,bytemuck::cast_slice(&updated));
+  println!("Scene entity {} position offset (renderer Y-up): {:?}",self.selected_scene+1,offset);
+ }
+ fn select_next_scene_entity(&mut self){
+  if !self.scene_ranges.is_empty(){
+   self.selected_scene=(self.selected_scene+1)%self.scene_ranges.len();
+   println!("Selected scene entity {}",self.selected_scene+1);
+  }
+ }
  fn mouse_motion(&mut self,x:f64,y:f64){
   if let (Some(button),Some((last_x,last_y)))=(self.drag,self.cursor) {
    let dx=(x-last_x) as f32;let dy=(y-last_y) as f32;
@@ -924,10 +942,10 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   return Err("--add-v3o requires a standalone V3O main model (E4P attachments are not instanced)".into());
  }
  if extra_models.len()>15{return Err("maximum 16 V3O scene objects".into());}
- let (mesh,body_path,doors)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
-  load_vehicle(&path,transpose_rotation)?
+ let (mesh,body_path,doors,scene_ranges)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+  {let (mesh,body,doors)=load_vehicle(&path,transpose_rotation)?;(mesh,body,doors,Vec::new())}
  }else if extra_models.is_empty(){
-  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new())
+  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new(),Vec::new())
  }else{
   let paths=std::iter::once(path.clone()).chain(extra_models).collect::<Vec<_>>();
   let mut models=Vec::new();
@@ -953,12 +971,14 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    models.push(mesh);
   }
   println!("Multi-V3O scene: {} independently loaded models",models.len());
+  let mut vertex_start=0usize;
+  let entity_ranges=models.iter().map(|model|{let start=vertex_start;vertex_start+=model.vertices.len();start..vertex_start}).collect::<Vec<_>>();
   let objects=models.into_iter().enumerate().map(|(id,mesh)|{
    let entity=scene_entities::SceneEntity{id:scene_entities::EntityId(id as u64+1),name:paths[id].display().to_string(),transform:scene_entities::Transform::default()};
    println!("Scene entity {}: {}",entity.id.0,entity.name);
    (entity,mesh)
   }).collect();
-  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new())
+  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new(),entity_ranges)
  };
  println!("Scene instances: {} (shared material surfaces)",instance_count);
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
@@ -969,7 +989,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  em4_formats::e4p_lights::parse(&fs::read(&path)?)
 }else{Vec::new()};
  for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor,scene_ranges))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
@@ -1009,6 +1029,13 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
+       PhysicalKey::Code(KeyCode::Tab)=>{viewer.select_next_scene_entity();window.request_redraw();},
+       PhysicalKey::Code(KeyCode::ArrowLeft)=>{viewer.move_scene_entity(0,-0.5);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::ArrowRight)=>{viewer.move_scene_entity(0,0.5);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::ArrowUp)=>{viewer.move_scene_entity(2,-0.5);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::ArrowDown)=>{viewer.move_scene_entity(2,0.5);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::PageUp)=>{viewer.move_scene_entity(1,0.5);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::PageDown)=>{viewer.move_scene_entity(1,-0.5);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyR)=>{viewer.camera=viewer.initial_camera;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyW)=>{viewer.debug_normals=!viewer.debug_normals;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyG)=>{viewer.show_ground=!viewer.show_ground;window.request_redraw();},
