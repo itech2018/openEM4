@@ -132,7 +132,7 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,Arc<wgpu::BindGroup>,u8,[f32;3])>,
- uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
+ object_indices:Vec<wgpu::Buffer>,object_draw_ranges:Vec<std::ops::Range<u32>>,uniform:wgpu::Buffer,bind:wgpu::BindGroup,depth:Depth,camera:Camera,
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
@@ -162,6 +162,27 @@ impl Viewer {
    let start=indices.len() as u32;
    for t in mesh.triangles.iter().filter(|t|t.surface_index==surface){indices.extend_from_slice(&t.indices);}
    ranges.push(start..indices.len() as u32);
+  }
+  // Mixed scenes get independently addressable per-object index streams.
+  // Geometry is still stored in a shared vertex allocation, but each object's
+  // draw references its own index buffer instead of the monolithic index list.
+  let mut object_index_data=Vec::<Vec<u32>>::new();
+  let mut object_draw_ranges=vec![0..0;mesh.surfaces.len()];
+  if !scene_ranges.is_empty(){
+   object_index_data=vec![Vec::new();scene_ranges.len()];
+   for (surface_id,vertex_range) in scene_ranges.iter().enumerate(){
+    let mut local=Vec::new();
+    for material in 0..mesh.surfaces.len(){
+     let start=local.len() as u32;
+     for triangle in mesh.triangles.iter().filter(|t|t.surface_index==material
+       &&t.indices.iter().all(|&index|vertex_range.contains(&(index as usize)))){
+      local.extend_from_slice(&triangle.indices);
+     }
+     // Each surface belongs to exactly one of the separate V3O scene objects.
+     if local.len() as u32>start{object_draw_ranges[material]=start..local.len() as u32;}
+    }
+    object_index_data[surface_id]=local;
+   }
   }
   let instance=wgpu::Instance::default();
   let surface=instance.create_surface(window.clone()).map_err(|e|e.to_string())?;
@@ -408,6 +429,9 @@ impl Viewer {
    label:Some("V3O vertices"),contents:bytemuck::cast_slice(&vertices),usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST});
   let index_buffer=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
    label:Some("V3O triangles"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
+  let object_indices=object_index_data.iter().map(|data|device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+   label:Some("scene object indices"),contents:bytemuck::cast_slice(data),usage:wgpu::BufferUsages::INDEX
+  })).collect::<Vec<_>>();
   // Flat reference plane positioned just below the loaded geometry.
   let radius=(diagonal*0.95).max(3.0);
   let floor=min[1]-0.03;
@@ -442,7 +466,7 @@ impl Viewer {
   }).collect::<Vec<_>>();
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,scene_uniforms,scene_binds,draw_scene_ids,scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,scene_uniforms,scene_binds,draw_scene_ids,scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -691,13 +715,26 @@ impl Viewer {
    pass.set_pipeline(&self.pipeline);
    for (i,(range,material,kind,_)) in self.draws.iter().enumerate() {
     if *kind!=0 {continue;}
-    pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);
+    if self.draw_scene_ids[i]>0 {
+     pass.set_index_buffer(self.object_indices[self.draw_scene_ids[i]-1].slice(..),wgpu::IndexFormat::Uint32);
+     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(self.object_draw_ranges[i].clone(),0,0..1);
+    }else{
+     pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
+     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    }
    }
    pass.set_pipeline(&self.cutout_pipeline);
    for (i,(range,material,kind,_)) in self.draws.iter().enumerate() {
     if *kind!=1 {continue;}
     pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);
-    pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    if self.draw_scene_ids[i]>0 {
+     pass.set_index_buffer(self.object_indices[self.draw_scene_ids[i]-1].slice(..),wgpu::IndexFormat::Uint32);
+     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(self.object_draw_ranges[i].clone(),0,0..1);
+    }else{
+     pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
+     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    }
    }
    let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
    let eye=[self.camera.target[0]+self.camera.distance*cp*sy,self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
@@ -712,7 +749,13 @@ impl Viewer {
    for i in blended {
     let (range,material,_,_)=&self.draws[i];
     pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);
-    pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    if self.draw_scene_ids[i]>0 {
+     pass.set_index_buffer(self.object_indices[self.draw_scene_ids[i]-1].slice(..),wgpu::IndexFormat::Uint32);
+     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(self.object_draw_ranges[i].clone(),0,0..1);
+    }else{
+     pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
+     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
+    }
    }
    pass.set_bind_group(2,&self.scene_binds[0],&[]);
    // Data-driven diagnostic markers: position, colour and pulse from source E4P.
