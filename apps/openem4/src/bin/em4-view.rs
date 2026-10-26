@@ -1327,7 +1327,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
-       PhysicalKey::Code(KeyCode::KeyJ)=>{viewer.parent_to_last_spawned();window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyY)=>{viewer.parent_to_last_spawned();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyP)=>{viewer.toggle_parent_source();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyN)=>{viewer.spawn_selected_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_selected_instance();window.request_redraw();},
