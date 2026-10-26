@@ -145,13 +145,13 @@ struct Viewer {
  initial_camera:Camera,drag:Option<MouseButton>,cursor:Option<(f64,f64)>,debug_normals:bool,
  ground_vertex:wgpu::Buffer,ground_index:wgpu::Buffer,ground_material:wgpu::BindGroup,show_ground:bool,
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
- light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
+ light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32,usize)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
  scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,next_instance_id:u64,selected_scene:usize,selected_instance:Option<u64>,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32,scene_ranges:Vec<std::ops::Range<usize>>)->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32,scene_ranges:Vec<std::ops::Range<usize>>,light_sources:Vec<usize>)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
@@ -351,7 +351,7 @@ impl Viewer {
   let mut corona_anchors=Vec::new();
   let mut corona_materials=Vec::new();
   let mut corona_cache=std::collections::HashMap::<String,Option<std::path::PathBuf>>::new();
-  for light in light_defs {
+  for (light_index,light) in light_defs.iter().enumerate() {
    let tex=light.corona_texture.to_ascii_lowercase();
    let kind:u8=if tex.contains("blue"){1}else if tex.contains("red"){0}
     else if tex.contains("yellow"){3}else{2};
@@ -366,7 +366,7 @@ impl Viewer {
     mv.push(Vertex{pos:p,normal:[0.0,0.0,1.0],uv:[kind as f32*2.0+u,v]});
    }
    mi.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
-   light_markers.push((first..first+6,kind,light.flash_frequency,light.flash_offset));
+   light_markers.push((first..first+6,kind,light.flash_frequency,light.flash_offset,*light_sources.get(light_index).unwrap_or(&0)));
    // Resolve legacy corona TGA by basename under the source game's Data folder.
    // Fallback to an in-memory radial alpha mask if the original cannot be read.
    let cache_key=light.corona_texture.to_ascii_lowercase();
@@ -803,7 +803,7 @@ impl Viewer {
    pass.set_bind_group(1,&self.ground_material,&[]);
    pass.set_vertex_buffer(0,self.marker_vertex.slice(..));
    pass.set_index_buffer(self.marker_index.slice(..),wgpu::IndexFormat::Uint32);
-   for (index,(range,kind,frequency,offset)) in self.light_markers.iter().enumerate() {
+   for (index,(range,kind,frequency,offset,source)) in self.light_markers.iter().enumerate() {
     // Per-light phase. The source frequency and phase are independent for
     // each E4P record. Their exact EM4 time units still require verification.
     let pulse=em4_formats::e4p_lights::preview_flash_on(t,*frequency,*offset);
@@ -814,7 +814,15 @@ impl Viewer {
      2=>self.lights.headlights,
      _=>self.lights.left||self.lights.right
     };
-    if enabled&&pulse {pass.set_bind_group(1,&self.corona_materials[index],&[]);pass.draw_indexed(range.clone(),0,0..1);}
+    if enabled&&pulse {
+     pass.set_bind_group(2,&self.scene_binds[*source],&[]);
+     pass.set_bind_group(1,&self.corona_materials[index],&[]);
+     pass.draw_indexed(range.clone(),0,0..1);
+     for instance in self.scene_instances.iter().filter(|v|v.source+1==*source){
+      pass.set_bind_group(2,&instance.bind,&[]);
+      pass.draw_indexed(range.clone(),0,0..1);
+     }
+    }
    }
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
@@ -1283,11 +1291,29 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
   .with_inner_size(winit::dpi::LogicalSize::new(1200.0,800.0)).build(&event_loop)?);
- let light_defs=if scene_ranges.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
- em4_formats::e4p_lights::parse(&fs::read(&path)?)
-}else{Vec::new()};
+ let mut light_defs=Vec::new();
+ let mut light_sources=Vec::new();
+ if scene_ranges.is_empty(){
+  if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
+   let parsed=em4_formats::e4p_lights::parse(&fs::read(&path)?);
+   light_sources.extend(std::iter::repeat(0usize).take(parsed.len()));
+   light_defs.extend(parsed);
+  }
+ }else{
+  let source_paths=std::iter::once(path.clone()).chain(env::args_os().skip(2).filter_map(|arg|{
+   let arg=arg.to_string_lossy();
+   arg.strip_prefix("--add-v3o=").or_else(||arg.strip_prefix("--add-e4p=")).map(std::path::PathBuf::from)
+  })).collect::<Vec<_>>();
+  for (source,path) in source_paths.iter().enumerate(){
+   if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
+    let parsed=em4_formats::e4p_lights::parse(&fs::read(path)?);
+    light_sources.extend(std::iter::repeat(source+1).take(parsed.len()));
+    light_defs.extend(parsed);
+   }
+  }
+ }
  for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor,scene_ranges))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor,scene_ranges,light_sources))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
