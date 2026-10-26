@@ -1272,7 +1272,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  let event_loop=EventLoop::new()?;
  let window=Arc::new(WindowBuilder::new().with_title("openEM4 V3O Viewer | LMB Orbit | RMB Pan | Wheel Zoom | R Reset")
   .with_inner_size(winit::dpi::LogicalSize::new(1200.0,800.0)).build(&event_loop)?);
- let light_defs=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+ let light_defs=if scene_ranges.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
  em4_formats::e4p_lights::parse(&fs::read(&path)?)
 }else{Vec::new()};
  for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
