@@ -477,6 +477,18 @@ impl Viewer {
    println!("Texture restoration queued: {} (camera relevance increased)",original_job.name);
   }
  }
+ fn scene_draw_center(&self,index:usize)->[f32;3]{
+  let center=self.draws[index].3;
+  let scene=self.draw_scene_ids.get(index).copied().unwrap_or(0);
+  if scene==0{return center;}
+  let id=scene-1;
+  let matrix=model_matrix(self.scene_offsets[id],self.scene_yaws[id],self.scene_pivots[id]);
+  [
+   matrix[0][0]*center[0]+matrix[1][0]*center[1]+matrix[2][0]*center[2]+matrix[3][0],
+   matrix[0][1]*center[0]+matrix[1][1]*center[1]+matrix[2][1]*center[2]+matrix[3][1],
+   matrix[0][2]*center[0]+matrix[1][2]*center[1]+matrix[2][2]*center[2]+matrix[3][2]
+  ]
+ }
  fn dispatch_enhancements(&mut self){
   // Recompute priority before dispatch so orbit/pan/zoom affects remaining work.
   // Only two jobs in flight; other candidates stay eligible instead of being dropped.
@@ -488,7 +500,7 @@ impl Viewer {
   let score=|triangles:usize,job:&EnhancementJob|->f32{
    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
    let proximity=indices.iter().filter_map(|&index|self.draws.get(index)).map(|draw|{
-    let toward=sub(draw.3,eye);let distance=dot(toward,toward).sqrt().max(1.0);
+    let toward=sub(self.scene_draw_center(index),eye);let distance=dot(toward,toward).sqrt().max(1.0);
     let facing=dot(normalize(toward),forward);
     (0.1+0.9*((facing-0.15)/0.85).clamp(0.0,1.0))/distance
    }).fold(0.0_f32,f32::max);
@@ -517,8 +529,8 @@ impl Viewer {
   while required>self.enhancement_gpu_budget.saturating_sub(self.enhancement_gpu_used){
    if self.resident_enhancements.is_empty(){return false;}
    let score=|item:&ResidentEnhancement|->f32{
-    item.indices.iter().filter_map(|&i|self.draws.get(i)).map(|draw|{
-     let v=sub(draw.3,eye);let dist=dot(v,v).sqrt().max(1.0);
+    item.indices.iter().filter(|&&i|i<self.draws.len()).map(|&i|{
+     let v=sub(self.scene_draw_center(i),eye);let dist=dot(v,v).sqrt().max(1.0);
      (0.1+0.9*dot(normalize(v),forward).max(0.0))/dist
     }).fold(0.0_f32,f32::max)
    };
@@ -555,8 +567,8 @@ impl Viewer {
      self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
     let forward=normalize(sub(self.camera.target,eye));
     let importance=|indices:&[usize]|->f32{
-     indices.iter().filter_map(|&i|self.draws.get(i)).map(|draw|{
-      let toward=sub(draw.3,eye);
+     indices.iter().filter(|&&i|i<self.draws.len()).map(|&i|{
+      let toward=sub(self.scene_draw_center(i),eye);
       (0.1+0.9*dot(normalize(toward),forward).max(0.0))/dot(toward,toward).sqrt().max(1.0)
      }).fold(0.0_f32,f32::max)
     };
@@ -691,8 +703,9 @@ impl Viewer {
    let eye=[self.camera.target[0]+self.camera.distance*cp*sy,self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
    let mut blended:Vec<usize>=self.draws.iter().enumerate().filter(|(_,d)|d.2==2).map(|(i,_)|i).collect();
    blended.sort_by(|&a,&b|{
-    let da=dot(sub(self.draws[a].3,eye),sub(self.draws[a].3,eye));
-    let db=dot(sub(self.draws[b].3,eye),sub(self.draws[b].3,eye));
+    let pa=self.scene_draw_center(a);let pb=self.scene_draw_center(b);
+    let da=dot(sub(pa,eye),sub(pa,eye));
+    let db=dot(sub(pb,eye),sub(pb,eye));
     db.total_cmp(&da)
    });
    pass.set_pipeline(&self.transparent_pipeline);
