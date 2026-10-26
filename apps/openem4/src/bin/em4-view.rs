@@ -128,7 +128,7 @@ struct Viewer {
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
- scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,selected_scene:usize,
+ scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,selected_scene:usize,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -404,7 +404,7 @@ impl Viewer {
   println!("Base unique textures: {} GPU uploads, {} surfaces reused; ~{} MiB estimate; enhancement allowance {} MiB",material_registry.unique_count(),material_registry.reused_count(),baseline_texture_bytes/1048576,enhancement_budget_mib);
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -683,16 +683,40 @@ impl Viewer {
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
- fn move_scene_entity(&mut self,axis:usize,amount:f32){
+ fn update_scene_entity_vertices(&mut self){
   let Some(range)=self.scene_ranges.get(self.selected_scene).cloned()else{return;};
-  if axis>=3||range.end>self.closed_vertices.len()||range.is_empty(){return;}
-  self.scene_offsets[self.selected_scene][axis]+=amount;
+  if range.end>self.closed_vertices.len()||range.is_empty(){return;}
+  let original=&self.closed_vertices[range.clone()];
+  // Rotate about the object's own initial XZ bounding-box centre.
+  let min_x=original.iter().map(|v|v.pos[0]).fold(f32::INFINITY,f32::min);
+  let max_x=original.iter().map(|v|v.pos[0]).fold(f32::NEG_INFINITY,f32::max);
+  let min_z=original.iter().map(|v|v.pos[2]).fold(f32::INFINITY,f32::min);
+  let max_z=original.iter().map(|v|v.pos[2]).fold(f32::NEG_INFINITY,f32::max);
+  let (cx,cz)=((min_x+max_x)*0.5,(min_z+max_z)*0.5);
+  let (sn,cs)=self.scene_yaws[self.selected_scene].to_radians().sin_cos();
   let offset=self.scene_offsets[self.selected_scene];
-  let mut updated=self.closed_vertices[range.clone()].to_vec();
-  for v in &mut updated {for k in 0..3{v.pos[k]+=offset[k];}}
-  let byte_offset=(range.start*std::mem::size_of::<Vertex>()) as u64;
-  self.queue.write_buffer(&self.vertices,byte_offset,bytemuck::cast_slice(&updated));
-  println!("Scene entity {} position offset (renderer Y-up): {:?}",self.selected_scene+1,offset);
+  let mut updated=original.to_vec();
+  for v in &mut updated {
+   let x=v.pos[0]-cx;let z=v.pos[2]-cz;
+   v.pos[0]=cx+cs*x+sn*z+offset[0];
+   v.pos[1]+=offset[1];
+   v.pos[2]=cz-sn*x+cs*z+offset[2];
+   let nx=v.normal[0];let nz=v.normal[2];
+   v.normal[0]=cs*nx+sn*nz;v.normal[2]=-sn*nx+cs*nz;
+  }
+  self.queue.write_buffer(&self.vertices,(range.start*std::mem::size_of::<Vertex>()) as u64,bytemuck::cast_slice(&updated));
+ }
+ fn move_scene_entity(&mut self,axis:usize,amount:f32){
+  if self.scene_ranges.get(self.selected_scene).is_none()||axis>=3{return;}
+  self.scene_offsets[self.selected_scene][axis]+=amount;
+  self.update_scene_entity_vertices();
+  println!("Scene entity {} position offset: {:?}",self.selected_scene+1,self.scene_offsets[self.selected_scene]);
+ }
+ fn rotate_scene_entity(&mut self,degrees:f32){
+  if self.scene_ranges.get(self.selected_scene).is_none(){return;}
+  self.scene_yaws[self.selected_scene]=(self.scene_yaws[self.selected_scene]+degrees).rem_euclid(360.0);
+  self.update_scene_entity_vertices();
+  println!("Scene entity {} yaw: {:.1}°",self.selected_scene+1,self.scene_yaws[self.selected_scene]);
  }
  fn select_next_scene_entity(&mut self){
   if !self.scene_ranges.is_empty(){
@@ -1035,6 +1059,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
+       PhysicalKey::Code(KeyCode::KeyQ)=>{viewer.rotate_scene_entity(-15.0);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyT)=>{viewer.rotate_scene_entity(15.0);window.request_redraw();},
        PhysicalKey::Code(KeyCode::Tab)=>{viewer.select_next_scene_entity();window.request_redraw();},
        PhysicalKey::Code(KeyCode::ArrowLeft)=>{viewer.move_scene_entity(0,-0.5);window.request_redraw();},
        PhysicalKey::Code(KeyCode::ArrowRight)=>{viewer.move_scene_entity(0,0.5);window.request_redraw();},
