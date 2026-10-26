@@ -45,11 +45,16 @@ impl Camera {
    [-dot(right,eye),-dot(up,eye),dot(forward,eye),1.0],
   ];
   let f=1.0/(45f32.to_radians()/2.0).tan();
+  // A mixed scene can span far more world units than a single vehicle.
+  // Keep depth valid for the camera distance instead of clipping the scene
+  // against the previous fixed ~1000-unit far plane.
+  let near=0.05f32;
+  let far=(self.distance*8.0).max(2000.0).min(10_000_000.0);
   let projection=[
    [f/aspect.max(0.01),0.0,0.0,0.0],
    [0.0,f,0.0,0.0],
-   [0.0,0.0,-1.00005,-1.0],
-   [0.0,0.0,-0.0500025,0.0],
+   [0.0,0.0,far/(near-far),-1.0],
+   [0.0,0.0,far*near/(near-far),0.0],
   ];
   multiply(projection,view)
  }
@@ -140,6 +145,7 @@ impl Viewer {
   let target=[(min[0]+max[0])*0.5,(min[1]+max[1])*0.5,(min[2]+max[2])*0.5];
   let diagonal=((max[0]-min[0]).powi(2)+(max[1]-min[1]).powi(2)+(max[2]-min[2]).powi(2)).sqrt();
   let camera=Camera::reset(target,(diagonal*1.5).max(2.0));
+  println!("Scene bounds (renderer Y-up): min={min:?} max={max:?}; camera distance={:.2}; adaptive far clip={:.2}",camera.distance,(camera.distance*8.0).max(2000.0));
   let mut indices:Vec<u32>=Vec::with_capacity(mesh.triangles.len()*3);
   let mut ranges=Vec::new();
   for surface in 0..mesh.surfaces.len(){
