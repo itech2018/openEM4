@@ -1244,10 +1244,10 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   return Err("--add-v3o and --instances cannot currently be combined".into());
  }
  if extra_models.len()>15{return Err("maximum 16 scene objects".into());}
- let (mesh,body_path,doors,scene_ranges)=if extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
-  {let (mesh,body,doors)=load_vehicle(&path,transpose_rotation)?;(mesh,body,doors,Vec::new())}
+ let (mesh,body_path,doors,scene_ranges,scene_light_offsets)=if extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+  {let (mesh,body,doors)=load_vehicle(&path,transpose_rotation)?;(mesh,body,doors,Vec::new(),Vec::new())}
  }else if extra_models.is_empty(){
-  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new(),Vec::new())
+  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new(),Vec::new(),Vec::new())
  }else{
   let paths=std::iter::once(path.clone()).chain(extra_models).collect::<Vec<_>>();
   let mut models=Vec::new();
@@ -1277,6 +1277,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    models.push(mesh);
   }
   println!("Mixed scene: {} independently rendered V3O/E4P models",models.len());
+  let layout_offsets=scene_mesh::preview_layout_offsets(&models);
   let mut vertex_start=0usize;
   let entity_ranges=models.iter().map(|model|{let start=vertex_start;vertex_start+=model.vertices.len();start..vertex_start}).collect::<Vec<_>>();
   let objects=models.into_iter().enumerate().map(|(id,mesh)|{
@@ -1284,7 +1285,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    println!("Scene entity {}: {}",entity.id.0,entity.name);
    (entity,mesh)
   }).collect();
-  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new(),entity_ranges)
+  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new(),entity_ranges,layout_offsets)
  };
  println!("Scene instances: {} (shared material surfaces)",instance_count);
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
@@ -1306,7 +1307,10 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   })).collect::<Vec<_>>();
   for (source,path) in source_paths.iter().enumerate(){
    if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
-    let parsed=em4_formats::e4p_lights::parse(&fs::read(path)?);
+    let mut parsed=em4_formats::e4p_lights::parse(&fs::read(path)?);
+    if let Some(shift)=scene_light_offsets.get(source){
+     for light in &mut parsed{for i in 0..3{light.position[i]+=shift[i];}}
+    }
     light_sources.extend(std::iter::repeat(source+1).take(parsed.len()));
     light_defs.extend(parsed);
    }
