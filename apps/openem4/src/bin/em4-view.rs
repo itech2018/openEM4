@@ -273,7 +273,7 @@ impl Viewer {
    });
   }
   let mut staged_jobs=Vec::<(usize,EnhancementJob,blake3::Hash)>::new();
-  let mut enhancement_total=0usize;
+  let enhancement_total;
   let mut duplicate_count=0usize;
   let mut pending_keys=std::collections::HashMap::<blake3::Hash,std::sync::Arc<std::sync::Mutex<Vec<usize>>>>::new();
   let mut draws=Vec::new();
@@ -1204,7 +1204,18 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  if ext!="v3o"&&ext!="e4p"{
   return Err(format!("Unsupported input format .{}: expected a .v3o 3D model or .e4p vehicle prototype. PNG/DDS/TGA images are textures, not models.",if ext.is_empty(){"(none)"}else{&ext}).into());
  }
- if !path.is_file(){return Err(format!("Model file not found: {}",path.display()).into());}
+ if !path.is_file(){
+  let hint=if ext=="e4p" {
+   let path_text=path.to_string_lossy();
+   let alternate=path_text.replace("\\Models\\","\\Prototypes\\").replace("/Models/","/Prototypes/");
+   if alternate!=path_text && std::path::Path::new(&alternate).is_file(){
+    format!("\\nFound a likely prototype instead: {alternate}")
+   }else{
+    "\\nE4P prototypes are usually under Mods/<mod>/Prototypes/Vehicles, not Models/Vehicles. Locate yours with PowerShell: Get-ChildItem <mod-folder> -Filter '*.e4p' -Recurse".to_string()
+   }
+  }else{String::new()};
+  return Err(format!("Model file not found: {}{hint}",path.display()).into());
+ }
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
  let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=off"){0}
  else if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
@@ -1316,7 +1327,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
-       PhysicalKey::Code(KeyCode::KeyH)=>{viewer.parent_to_last_spawned();window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyJ)=>{viewer.parent_to_last_spawned();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyP)=>{viewer.toggle_parent_source();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyN)=>{viewer.spawn_selected_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_selected_instance();window.request_redraw();},
