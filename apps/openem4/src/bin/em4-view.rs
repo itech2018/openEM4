@@ -526,10 +526,13 @@ impl Viewer {
    self.camera.target[1]+self.camera.distance*sp,
    self.camera.target[2]+self.camera.distance*cp*cy];
   let forward=normalize(sub(self.camera.target,eye));
+  // Precompute centres once so the scoring closure never captures `self`.
+  // This avoids holding an immutable borrow across queue removal and dispatch.
+  let centres=(0..self.draws.len()).map(|i|self.scene_draw_center(i)).collect::<Vec<_>>();
   let score=|triangles:usize,job:&EnhancementJob|->f32{
    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
-   let proximity=indices.iter().filter(|&&index|index<self.draws.len()).map(|&index|{
-    let toward=sub(self.scene_draw_center(index),eye);let distance=dot(toward,toward).sqrt().max(1.0);
+   let proximity=indices.iter().filter_map(|&index|centres.get(index)).map(|&center|{
+    let toward=sub(center,eye);let distance=dot(toward,toward).sqrt().max(1.0);
     let facing=dot(normalize(toward),forward);
     (0.1+0.9*((facing-0.15)/0.85).clamp(0.0,1.0))/distance
    }).fold(0.0_f32,f32::max);
