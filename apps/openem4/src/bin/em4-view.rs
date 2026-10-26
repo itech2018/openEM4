@@ -38,6 +38,12 @@ fn model_matrix(offset:[f32;3],yaw:f32,pivot:[f32;3])->[[f32;4];4]{
    [cx-cs*cx-sn*cz+offset[0],offset[1],cz+sn*cx-cs*cz+offset[2],1.0] ]
 }
 fn identity_matrix()->[[f32;4];4]{model_matrix([0.0;3],0.0,[0.0;3])}
+fn invert_rigid_y(m:[[f32;4];4])->[[f32;4];4]{
+ let mut inverse=identity_matrix();
+ for col in 0..3{for row in 0..3{inverse[col][row]=m[row][col];}}
+ for row in 0..3{inverse[3][row]=-(0..3).map(|i|inverse[i][row]*m[3][i]).sum::<f32>();}
+ inverse
+}
 #[derive(Clone,Copy)]
 struct Camera {yaw:f32,pitch:f32,distance:f32,target:[f32;3]}
 impl Camera {
@@ -129,7 +135,9 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
  ]}))
 }
 
-struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,parent_source:Option<usize>,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
+#[derive(Clone,Copy,Debug)]
+enum SceneParent {Source(usize),Instance(u64)}
+struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,parent:Option<SceneParent>,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,Arc<wgpu::BindGroup>,u8,[f32;3])>,
@@ -811,28 +819,76 @@ impl Viewer {
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
- fn refresh_instance_transforms(&self){
-  for instance in &self.scene_instances{
-   let mut matrix=model_matrix(instance.offset,instance.yaw,self.scene_pivots[instance.source]);
-   if let Some(parent)=instance.parent_source{
-    let parent_model=model_matrix(self.scene_offsets[parent],self.scene_yaws[parent],self.scene_pivots[parent]);
-    matrix=multiply(parent_model,matrix);
-   }
-   self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model:matrix}));
+ fn source_world(&self,source:usize)->[[f32;4];4]{
+  model_matrix(self.scene_offsets[source],self.scene_yaws[source],self.scene_pivots[source])
+ }
+ fn instance_world(&self,id:u64,visited:&mut Vec<u64>)->Option<[[f32;4];4]>{
+  if visited.contains(&id)||visited.len()>64{return None;}
+  let item=self.scene_instances.iter().find(|i|i.id==id)?;
+  visited.push(id);
+  let local=model_matrix(item.offset,item.yaw,self.scene_pivots[item.source]);
+  let world=match item.parent{
+   None=>Some(local),
+   Some(SceneParent::Source(source))=>Some(multiply(self.source_world(source),local)),
+   Some(SceneParent::Instance(parent))=>self.instance_world(parent,visited).map(|m|multiply(m,local))
+  };
+  visited.pop();world
+ }
+ fn parent_world(&self,parent:SceneParent)->Option<[[f32;4];4]>{
+  match parent{
+   SceneParent::Source(s)=>if s<self.scene_ranges.len(){Some(self.source_world(s))}else{None},
+   SceneParent::Instance(id)=>self.instance_world(id,&mut Vec::new())
   }
  }
- fn toggle_parent_source(&mut self){
-  let Some(id)=self.selected_instance else {println!("Select a spawned instance to attach.");return;};
-  if let Some(instance)=self.scene_instances.iter_mut().find(|v|v.id==id){
-   if instance.parent_source.is_some(){
-    instance.parent_source=None;
-    println!("Detached instance {id} from source object.");
-   }else{
-    instance.parent_source=Some(instance.source);
-    println!("Attached instance {id} to source object {}.",instance.source+1);
+ fn refresh_instance_transforms(&self){
+  for instance in &self.scene_instances{
+   if let Some(model)=self.instance_world(instance.id,&mut Vec::new()){
+    self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model}));
    }
   }
+ }
+ fn reparent_selected(&mut self,target:Option<SceneParent>){
+  let Some(id)=self.selected_instance else {println!("Select a spawned instance first.");return;};
+  if matches!(target,Some(SceneParent::Instance(parent)) if parent==id){println!("Cannot parent entity to itself.");return;}
+  let Some(world)=self.instance_world(id,&mut Vec::new())else{return;};
+  if let Some(SceneParent::Instance(parent))=target{
+   if self.instance_world(parent,&mut vec![id]).is_none(){
+    println!("Parenting rejected: missing parent or cycle.");return;
+   }
+  }
+  let local=if let Some(parent)=target{
+   let Some(parent_world)=self.parent_world(parent)else{return;};
+   multiply(invert_rigid_y(parent_world),world)
+  }else{world};
+  if let Some(instance)=self.scene_instances.iter_mut().find(|v|v.id==id){
+   let p=self.scene_pivots[instance.source];
+   let yaw=(-local[0][2]).atan2(local[0][0]);
+   let (sn,cs)=yaw.sin_cos();
+   instance.offset=[
+    local[3][0]-p[0]+cs*p[0]+sn*p[2],
+    local[3][1],
+    local[3][2]-p[2]-sn*p[0]+cs*p[2]
+   ];
+   instance.yaw=yaw.to_degrees().rem_euclid(360.0);
+   instance.parent=target;
+  }
   self.refresh_instance_transforms();
+  println!("Updated parent for instance {id}; preserved world transform.");
+ }
+ fn toggle_parent_source(&mut self){
+  let Some(id)=self.selected_instance else {return;};
+  let attached=self.scene_instances.iter().find(|v|v.id==id).and_then(|v|v.parent).is_some();
+  let target=if attached{None}else{
+   let source=self.scene_instances.iter().find(|v|v.id==id).map(|v|v.source).unwrap();
+   Some(SceneParent::Source(source))
+  };
+  self.reparent_selected(target);
+ }
+ fn parent_to_last_spawned(&mut self){
+  let Some(selected)=self.selected_instance else{return;};
+  let target=self.scene_instances.iter().rev().find(|v|v.id!=selected).map(|v|v.id);
+  if let Some(id)=target{self.reparent_selected(Some(SceneParent::Instance(id)));}
+  else{println!("No other spawned instance to use as parent.");}
  }
  fn update_scene_entity_vertices(&mut self){
   let id=self.selected_scene;
@@ -891,7 +947,7 @@ impl Viewer {
    label:Some("runtime scene instance bind"),layout:&self.object_layout,
    entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]
   });
-  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,parent_source:None,uniform,bind});
+  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,parent:None,uniform,bind});
   self.selected_instance=Some(id);
   println!("Spawned and selected instance {id} from scene object {}",source+1);
  }
@@ -900,6 +956,9 @@ impl Viewer {
    println!("Loaded source objects are protected; select a spawned instance to delete.");return;
   };
   if let Some(index)=self.scene_instances.iter().position(|item|item.id==id){
+   // Detach children while preserving their current world-space transforms.
+   let children=self.scene_instances.iter().filter(|v|matches!(v.parent,Some(SceneParent::Instance(parent)) if parent==id)).map(|v|v.id).collect::<Vec<_>>();
+   for child in children {self.selected_instance=Some(child);self.reparent_selected(None);}
    self.scene_instances.remove(index);
    self.selected_instance=None;
    println!("Removed selected runtime instance {id}");
@@ -1256,6 +1315,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
+       PhysicalKey::Code(KeyCode::KeyH)=>{viewer.parent_to_last_spawned();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyP)=>{viewer.toggle_parent_source();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyN)=>{viewer.spawn_selected_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_selected_instance();window.request_redraw();},
