@@ -894,6 +894,11 @@ fn load_vehicle(path:&Path,transpose_rotation:bool)->Result<(em4_formats::v3o_me
 fn main()->Result<(),Box<dyn std::error::Error>>{
  env_logger::init();
  let path=std::path::PathBuf::from(env::args_os().nth(1).ok_or("Usage: cargo run -p openem4 --bin em4-view -- <model.V3O>")?);
+ let ext=path.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+ if ext!="v3o"&&ext!="e4p"{
+  return Err(format!("Unsupported input format .{}: expected a .v3o 3D model or .e4p vehicle prototype. PNG/DDS/TGA images are textures, not models.",if ext.is_empty(){"(none)"}else{&ext}).into());
+ }
+ if !path.is_file(){return Err(format!("Model file not found: {}",path.display()).into());}
  let transpose_rotation=env::args_os().any(|a|a=="--transpose-attachment-rotation");
  let upscale_factor=if env::args_os().any(|a|a=="--texture-upscale=off"){0}
  else if env::args_os().any(|a|a=="--texture-upscale=4"){4}else{1};
@@ -925,6 +930,9 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   let paths=std::iter::once(path.clone()).chain(extra_models).collect::<Vec<_>>();
   let mut models=Vec::new();
   for model_path in &paths {
+   if !model_path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("v3o")){
+    return Err(format!("Additional scene model must be .v3o: {}",model_path.display()).into());
+   }
    let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(model_path)?)?;
    for surface in &mut mesh.surfaces{
     let texture=surface.texture.replace('\\',"/");
