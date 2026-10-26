@@ -94,6 +94,7 @@ fn depth(device:&wgpu::Device,w:u32,h:u32)->Depth {
  let view=texture.create_view(&Default::default());Depth{_texture:texture,view}
 }
 #[derive(Default)]
+#[derive(Clone,Copy,Default)]
 struct LightControls { headlights:bool, brake:bool, left:bool, right:bool, beacon:bool }
 impl LightControls {
  fn phase(&self,seconds:f32)->[u32;4] {
@@ -137,7 +138,7 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
 
 #[derive(Clone,Copy,Debug)]
 enum SceneParent {Source(usize),Instance(u64)}
-struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,parent:Option<SceneParent>,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
+struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,lights:LightControls,parent:Option<SceneParent>,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,Arc<wgpu::BindGroup>,u8,[f32;3])>,
@@ -148,7 +149,7 @@ struct Viewer {
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32,usize)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
  scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,next_instance_id:u64,selected_scene:usize,selected_instance:Option<u64>,
- lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
+ lights:LightControls,source_lights:Vec<LightControls>,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
  async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32,scene_ranges:Vec<std::ops::Range<usize>>,light_sources:Vec<usize>)->Result<Self,String>{
@@ -479,7 +480,7 @@ impl Viewer {
   }).collect::<Vec<_>>();
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),next_instance_id:scene_ranges.len() as u64+1,scene_ranges,selected_scene:0,selected_instance:None,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),next_instance_id:scene_ranges.len() as u64+1,scene_ranges,selected_scene:0,selected_instance:None,lights:LightControls::default(),source_lights:vec![LightControls::default();scene_ranges.len()],started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -809,18 +810,23 @@ impl Viewer {
     let pulse=em4_formats::e4p_lights::preview_flash_on(t,*frequency,*offset);
     // Red/blue corona entries are emergency equipment by default; do not
     // activate every red emergency lamp when pressing the brake key.
-    let enabled=match kind {
-     0|1=>self.lights.beacon,
-     2=>self.lights.headlights,
-     _=>self.lights.left||self.lights.right
+    let enabled_for=|lights:&LightControls|match kind {
+     0|1=>lights.beacon,
+     2=>lights.headlights,
+     _=>lights.left||lights.right
     };
-    if enabled&&pulse {
-     pass.set_bind_group(2,&self.scene_binds[*source],&[]);
+    if pulse {
+     let source_lights=if *source==0{&self.lights}else{&self.source_lights[*source-1]};
      pass.set_bind_group(1,&self.corona_materials[index],&[]);
-     pass.draw_indexed(range.clone(),0,0..1);
-     for instance in self.scene_instances.iter().filter(|v|v.source+1==*source){
-      pass.set_bind_group(2,&instance.bind,&[]);
+     if enabled_for(source_lights){
+      pass.set_bind_group(2,&self.scene_binds[*source],&[]);
       pass.draw_indexed(range.clone(),0,0..1);
+     }
+     for instance in self.scene_instances.iter().filter(|v|v.source+1==*source){
+      if enabled_for(&instance.lights){
+       pass.set_bind_group(2,&instance.bind,&[]);
+       pass.draw_indexed(range.clone(),0,0..1);
+      }
      }
     }
    }
@@ -938,6 +944,15 @@ impl Viewer {
   self.update_scene_entity_vertices();
   println!("Scene entity {} yaw {:.1}",self.selected_scene+1,self.scene_yaws[self.selected_scene]);
  }
+ fn selected_lights_mut(&mut self)->&mut LightControls{
+  if let Some(id)=self.selected_instance {
+   if let Some(index)=self.scene_instances.iter().position(|i|i.id==id){
+    return &mut self.scene_instances[index].lights;
+   }
+  }
+  if self.scene_ranges.is_empty(){&mut self.lights}
+  else{&mut self.source_lights[self.selected_scene]}
+ }
  fn spawn_selected_instance(&mut self){
   let source=self.selected_instance.and_then(|id|self.scene_instances.iter().find(|i|i.id==id).map(|i|i.source)).unwrap_or(self.selected_scene);
   if source>=self.scene_ranges.len()||self.scene_instances.len()>=64{return;}
@@ -955,7 +970,7 @@ impl Viewer {
    label:Some("runtime scene instance bind"),layout:&self.object_layout,
    entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]
   });
-  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,parent:None,uniform,bind});
+  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,lights:LightControls::default(),parent:None,uniform,bind});
   self.selected_instance=Some(id);
   println!("Spawned and selected instance {id} from scene object {}",source+1);
  }
@@ -1373,10 +1388,10 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
        PhysicalKey::Code(KeyCode::KeyR)=>{viewer.camera=viewer.initial_camera;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyW)=>{viewer.debug_normals=!viewer.debug_normals;window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyG)=>{viewer.show_ground=!viewer.show_ground;window.request_redraw();},
-       PhysicalKey::Code(KeyCode::KeyH)=>{viewer.lights.headlights=!viewer.lights.headlights;println!("Headlights: {}",viewer.lights.headlights);window.request_redraw();},
-       PhysicalKey::Code(KeyCode::KeyB)=>{viewer.lights.brake=!viewer.lights.brake;println!("Brake lights: {}",viewer.lights.brake);window.request_redraw();},
-       PhysicalKey::Code(KeyCode::KeyL)=>{viewer.lights.left=!viewer.lights.left;println!("Left indicator: {}",viewer.lights.left);window.request_redraw();},
-       PhysicalKey::Code(KeyCode::KeyK)=>{viewer.lights.right=!viewer.lights.right;println!("Right indicator: {}",viewer.lights.right);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyH)=>{let lights=viewer.selected_lights_mut();lights.headlights=!lights.headlights;println!("Selected headlights: {}",lights.headlights);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyB)=>{let lights=viewer.selected_lights_mut();lights.beacon=!lights.beacon;println!("Selected beacons: {}",lights.beacon);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyL)=>{let lights=viewer.selected_lights_mut();lights.left=!lights.left;println!("Selected left indicator: {}",lights.left);window.request_redraw();},
+       PhysicalKey::Code(KeyCode::KeyK)=>{let lights=viewer.selected_lights_mut();lights.right=!lights.right;println!("Selected right indicator: {}",lights.right);window.request_redraw();},
        PhysicalKey::Code(KeyCode::Digit0)=>viewer.select_door(0),
        PhysicalKey::Code(KeyCode::Digit1)=>viewer.select_door(1),
        PhysicalKey::Code(KeyCode::Digit2)=>viewer.select_door(2),
