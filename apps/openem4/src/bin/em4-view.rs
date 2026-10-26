@@ -6,6 +6,8 @@ mod texture_upscale;
 mod material_registry;
 #[path = "../scene_mesh.rs"]
 mod scene_mesh;
+#[path = "../scene_entities.rs"]
+mod scene_entities;
 use std::{env, fs, mem, path::Path, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -951,7 +953,12 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    models.push(mesh);
   }
   println!("Multi-V3O scene: {} independently loaded models",models.len());
-  (scene_mesh::combine_v3o(models)?,path.clone(),Vec::new())
+  let objects=models.into_iter().enumerate().map(|(id,mesh)|{
+   let entity=scene_entities::SceneEntity{id:scene_entities::EntityId(id as u64+1),name:paths[id].display().to_string(),transform:scene_entities::Transform::default()};
+   println!("Scene entity {}: {}",entity.id.0,entity.name);
+   (entity,mesh)
+  }).collect();
+  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new())
  };
  println!("Scene instances: {} (shared material surfaces)",instance_count);
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
