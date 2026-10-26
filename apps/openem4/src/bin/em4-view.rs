@@ -1219,16 +1219,13 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
  }
  let extra_models=env::args_os().skip(2).filter_map(|arg|{
   let arg=arg.to_string_lossy();
-  arg.strip_prefix("--add-v3o=").map(std::path::PathBuf::from)
+  arg.strip_prefix("--add-v3o=").or_else(||arg.strip_prefix("--add-e4p=")).map(std::path::PathBuf::from)
  }).collect::<Vec<_>>();
  if !extra_models.is_empty()&&instance_count!=1{
   return Err("--add-v3o and --instances cannot currently be combined".into());
  }
- if !extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")){
-  return Err("--add-v3o requires a standalone V3O main model (E4P attachments are not instanced)".into());
- }
- if extra_models.len()>15{return Err("maximum 16 V3O scene objects".into());}
- let (mesh,body_path,doors,scene_ranges)=if path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+ if extra_models.len()>15{return Err("maximum 16 scene objects".into());}
+ let (mesh,body_path,doors,scene_ranges)=if extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
   {let (mesh,body,doors)=load_vehicle(&path,transpose_rotation)?;(mesh,body,doors,Vec::new())}
  }else if extra_models.is_empty(){
   (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new(),Vec::new())
@@ -1236,10 +1233,14 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   let paths=std::iter::once(path.clone()).chain(extra_models).collect::<Vec<_>>();
   let mut models=Vec::new();
   for model_path in &paths {
-   if !model_path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("v3o")){
-    return Err(format!("Additional scene model must be .v3o: {}",model_path.display()).into());
-   }
-   let mut mesh=em4_formats::v3o_mesh::parse(&fs::read(model_path)?)?;
+   let is_e4p=model_path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p"));
+   let is_v3o=model_path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("v3o"));
+   if !is_e4p&&!is_v3o{return Err(format!("Scene model must be .v3o or .e4p: {}",model_path.display()).into());}
+   let (mut mesh,texture_base)=if is_e4p{
+    let (mesh,body_path,_doors)=load_vehicle(model_path,transpose_rotation)?;
+    println!("Static E4P scene preview: {} (attached geometry loaded; independent doors/lights not active)",model_path.display());
+    (mesh,body_path)
+   }else{(em4_formats::v3o_mesh::parse(&fs::read(model_path)?)?,model_path.clone())};
    for surface in &mut mesh.surfaces{
     let texture=surface.texture.replace('\\',"/");
     if texture.trim().is_empty(){continue;}
@@ -1248,7 +1249,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     }else if let Some(game_ref)=texture.strip_prefix("mod:"){
      data_root(model_path).ok().and_then(|root|resolve_game_ref(&root,game_ref))
     }else{
-     model_path.parent().and_then(|folder|lookup_in_root(folder,&texture))
+     texture_base.parent().and_then(|folder|lookup_in_root(folder,&texture))
       .or_else(||data_root(model_path).ok().and_then(|root|resolve_game_ref(&root,&texture)))
     };
     if let Some(found)=resolved {surface.texture=found.to_string_lossy().into_owned();}
@@ -1256,7 +1257,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    }
    models.push(mesh);
   }
-  println!("Multi-V3O scene: {} independently loaded models",models.len());
+  println!("Mixed scene: {} independently rendered V3O/E4P models",models.len());
   let mut vertex_start=0usize;
   let entity_ranges=models.iter().map(|model|{let start=vertex_start;vertex_start+=model.vertices.len();start..vertex_start}).collect::<Vec<_>>();
   let objects=models.into_iter().enumerate().map(|(id,mesh)|{
