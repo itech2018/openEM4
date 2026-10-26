@@ -655,6 +655,7 @@ impl Viewer {
  }
  fn tick_scene_doors(&mut self,dt:f32)->bool{
   let mut moving=false;
+  let mut any_changed=false;
   for (source,state) in self.scene_doors.iter_mut().enumerate(){
    let Some(vertex_range)=self.scene_ranges.get(source)else{continue;};
    if state.doors.is_empty(){continue;}
@@ -666,6 +667,7 @@ impl Viewer {
     if (goal-*p).abs()>1e-5{moving=true;}
    }
    if !changed{continue;}
+   any_changed=true;
    let mut verts=self.closed_vertices[vertex_range.clone()].to_vec();
    for (i,door) in state.doors.iter().enumerate(){
     let t=state.progress[i];let eased=t*t*(3.0-2.0*t);
@@ -682,7 +684,7 @@ impl Viewer {
    }
    self.queue.write_buffer(&self.object_vertices[source],0,bytemuck::cast_slice(&verts));
   }
-  moving
+  moving||any_changed
  }
  fn toggle_doors(&mut self){
   if !self.scene_doors.is_empty(){self.toggle_scene_doors();return;}
