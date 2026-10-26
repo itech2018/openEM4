@@ -137,6 +137,7 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
 
 #[derive(Clone,Copy,Debug)]
 enum SceneParent {Source(usize),Instance(u64)}
+struct SceneDoorState {doors:Vec<DoorPreview>,progress:Vec<f32>,targets:Vec<bool>}
 struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,lights:LightControls,parent:Option<SceneParent>,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
@@ -147,11 +148,11 @@ struct Viewer {
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32,usize)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
- scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,next_instance_id:u64,selected_scene:usize,selected_instance:Option<u64>,
+ scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,scene_doors:Vec<SceneDoorState>,next_instance_id:u64,selected_scene:usize,selected_instance:Option<u64>,
  lights:LightControls,source_lights:Vec<LightControls>,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
- async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32,scene_ranges:Vec<std::ops::Range<usize>>,light_sources:Vec<usize>)->Result<Self,String>{
+ async fn new(window:Arc<winit::window::Window>,mesh:&em4_formats::v3o_mesh::Mesh,model_path:&Path,light_defs:&[em4_formats::e4p_lights::Light],doors:Vec<DoorPreview>,upscale_factor:u32,scene_ranges:Vec<std::ops::Range<usize>>,light_sources:Vec<usize>,scene_doors:Vec<SceneDoorState>)->Result<Self,String>{
   if mesh.vertices.is_empty()||mesh.triangles.is_empty(){return Err("V3O model contains no renderable triangles".into());}
   let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
   // EM4 is Z-up. Convert positions AND normals into renderer Y-up.
@@ -479,7 +480,7 @@ impl Viewer {
   }).collect::<Vec<_>>();
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),next_instance_id:scene_ranges.len() as u64+1,source_lights:vec![LightControls::default();scene_ranges.len()],scene_ranges,selected_scene:0,selected_instance:None,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),scene_doors,next_instance_id:scene_ranges.len() as u64+1,source_lights:vec![LightControls::default();scene_ranges.len()],scene_ranges,selected_scene:0,selected_instance:None,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -641,7 +642,50 @@ impl Viewer {
   }
   changed
  }
+ fn toggle_scene_doors(&mut self){
+  let source=if let Some(id)=self.selected_instance{
+   self.scene_instances.iter().find(|v|v.id==id).map(|v|v.source).unwrap_or(self.selected_scene)
+  }else{self.selected_scene};
+  let Some(state)=self.scene_doors.get_mut(source)else{return;};
+  if state.doors.is_empty(){println!("Selected model has no E4P doors");return;}
+  let targets=(0..state.doors.len()).filter(|&i|self.selected_door.is_none_or(|selected|selected==i)).collect::<Vec<_>>();
+  let opening=targets.iter().any(|&i|!state.targets[i]);
+  for i in targets{state.targets[i]=opening;}
+  println!("Source vehicle {} door target: {}",source+1,if opening{"OPEN"}else{"CLOSED"});
+ }
+ fn tick_scene_doors(&mut self,dt:f32)->bool{
+  let mut moving=false;
+  for (source,state) in self.scene_doors.iter_mut().enumerate(){
+   let Some(vertex_range)=self.scene_ranges.get(source)else{continue;};
+   if state.doors.is_empty(){continue;}
+   let mut changed=false;
+   for (i,p) in state.progress.iter_mut().enumerate(){
+    let goal=if state.targets[i]{1.0}else{0.0};
+    let next=if *p<goal{(*p+dt*1.3).min(goal)}else{(*p-dt*1.3).max(goal)};
+    if (next-*p).abs()>1e-6{*p=next;changed=true;}
+    if (goal-*p).abs()>1e-5{moving=true;}
+   }
+   if !changed{continue;}
+   let mut verts=self.closed_vertices[vertex_range.clone()].to_vec();
+   for (i,door) in state.doors.iter().enumerate(){
+    let t=state.progress[i];let eased=t*t*(3.0-2.0*t);
+    let (sn,cs)=(door.angle*eased).sin_cos();
+    let local_start=door.range.start;let local_end=door.range.end;
+    if local_end>verts.len(){continue;}
+    for v in &mut verts[local_start..local_end]{
+     let p=sub(v.pos,door.pivot);
+     let c=cross(door.axis,p);let d=dot(door.axis,p);
+     for k in 0..3{v.pos[k]=door.pivot[k]+p[k]*cs+c[k]*sn+door.axis[k]*d*(1.0-cs);}
+     let n=v.normal;let c=cross(door.axis,n);let d=dot(door.axis,n);
+     for k in 0..3{v.normal[k]=n[k]*cs+c[k]*sn+door.axis[k]*d*(1.0-cs);}
+    }
+   }
+   self.queue.write_buffer(&self.object_vertices[source],0,bytemuck::cast_slice(&verts));
+  }
+  moving
+ }
  fn toggle_doors(&mut self){
+  if !self.scene_doors.is_empty(){self.toggle_scene_doors();return;}
   if self.doors.is_empty(){println!("No E4P child doors found");return;}
   let indices:Vec<usize>=match self.selected_door{Some(i) if i<self.doors.len()=>vec![i],_=> (0..self.doors.len()).collect()};
   let opening=indices.iter().any(|&i|!self.door_targets[i]);
@@ -1258,22 +1302,26 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   return Err("--add-v3o and --instances cannot currently be combined".into());
  }
  if extra_models.len()>15{return Err("maximum 16 scene objects".into());}
- let (mesh,body_path,doors,scene_ranges,scene_light_offsets)=if extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
-  {let (mesh,body,doors)=load_vehicle(&path,transpose_rotation)?;(mesh,body,doors,Vec::new(),Vec::new())}
+ let (mesh,body_path,doors,scene_ranges,scene_light_offsets,scene_doors)=if extra_models.is_empty()&&path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p")) {
+  {let (mesh,body,doors)=load_vehicle(&path,transpose_rotation)?;(mesh,body,doors,Vec::new(),Vec::new(),Vec::new())}
  }else if extra_models.is_empty(){
-  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new(),Vec::new(),Vec::new())
+  (scene_mesh::repeated_v3o(em4_formats::v3o_mesh::parse(&fs::read(&path)?)?,instance_count)?,path.clone(),Vec::new(),Vec::new(),Vec::new(),Vec::new())
  }else{
   let paths=std::iter::once(path.clone()).chain(extra_models).collect::<Vec<_>>();
   let mut models=Vec::new();
+  let mut scene_doors=Vec::new();
   for model_path in &paths {
    let is_e4p=model_path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("e4p"));
    let is_v3o=model_path.extension().is_some_and(|e|e.to_string_lossy().eq_ignore_ascii_case("v3o"));
    if !is_e4p&&!is_v3o{return Err(format!("Scene model must be .v3o or .e4p: {}",model_path.display()).into());}
    let (mut mesh,texture_base)=if is_e4p{
-    let (mesh,body_path,_doors)=load_vehicle(model_path,transpose_rotation)?;
+    let (mesh,body_path,loaded_doors)=load_vehicle(model_path,transpose_rotation)?;
+    scene_doors.push(SceneDoorState{progress:vec![0.0;loaded_doors.len()],targets:vec![false;loaded_doors.len()],doors:loaded_doors});
     println!("Static E4P scene preview: {} (attached geometry loaded; independent doors/lights not active)",model_path.display());
     (mesh,body_path)
-   }else{(em4_formats::v3o_mesh::parse(&fs::read(model_path)?)?,model_path.clone())};
+   }else{
+    scene_doors.push(SceneDoorState{doors:Vec::new(),progress:Vec::new(),targets:Vec::new()});
+    (em4_formats::v3o_mesh::parse(&fs::read(model_path)?)?,model_path.clone())};
    for surface in &mut mesh.surfaces{
     let texture=surface.texture.replace('\\',"/");
     if texture.trim().is_empty(){continue;}
@@ -1292,6 +1340,11 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   }
   println!("Mixed scene: {} independently rendered V3O/E4P models",models.len());
   let layout_offsets=scene_mesh::preview_layout_offsets(&models);
+  for (state,shift) in scene_doors.iter_mut().zip(&layout_offsets){
+   for door in &mut state.doors{
+    door.pivot[0]+=shift[0];door.pivot[1]+=shift[2];door.pivot[2]-=shift[1];
+   }
+  }
   let mut vertex_start=0usize;
   let entity_ranges=models.iter().map(|model|{let start=vertex_start;vertex_start+=model.vertices.len();start..vertex_start}).collect::<Vec<_>>();
   let objects=models.into_iter().enumerate().map(|(id,mesh)|{
@@ -1299,7 +1352,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    println!("Scene entity {}: {}",entity.id.0,entity.name);
    (entity,mesh)
   }).collect();
-  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new(),entity_ranges,layout_offsets)
+  (scene_mesh::combine_entities(objects)?,path.clone(),Vec::new(),entity_ranges,layout_offsets,scene_doors)
  };
  println!("Scene instances: {} (shared material surfaces)",instance_count);
  println!("Loading {} vertices, {} triangles, {} surfaces",mesh.vertices.len(),mesh.triangles.len(),mesh.surfaces.len());
@@ -1331,7 +1384,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
   }
  }
  for (i,l) in light_defs.iter().enumerate(){println!("E4P light {i}: anchor={:?} polygon_points={} corona={} type={} flash_frequency={} flash_offset={}",l.position,l.points.len(),l.corona_texture,l.light_type,l.flash_frequency,l.flash_offset);}
- let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor,scene_ranges,light_sources))?;
+ let mut viewer=pollster::block_on(Viewer::new(window.clone(),&mesh,&body_path,&light_defs,doors,upscale_factor,scene_ranges,light_sources,scene_doors))?;
  event_loop.set_control_flow(ControlFlow::Wait);
  event_loop.run(move |event,target|{
   if let Event::AboutToWait=event {
@@ -1339,7 +1392,8 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
    let upgraded=viewer.receive_enhancements();
    viewer.queue_evicted_restorations();
    viewer.dispatch_enhancements();
-   let door_moving=viewer.tick_doors();
+   let dt=Instant::now().duration_since(viewer.last_door_tick).as_secs_f32().min(0.1);
+   let door_moving=viewer.tick_doors()|viewer.tick_scene_doors(dt);
    if upgraded||door_moving||viewer.lights.beacon||viewer.lights.left||viewer.lights.right {window.request_redraw();}
   }
   if let Event::WindowEvent{window_id,event}=event {
