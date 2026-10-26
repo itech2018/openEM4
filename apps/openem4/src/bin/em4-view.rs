@@ -129,7 +129,7 @@ fn material_group(device:&wgpu::Device,queue:&wgpu::Queue,layout:&wgpu::BindGrou
  ]}))
 }
 
-struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
+struct RuntimeInstance {id:u64,source:usize,offset:[f32;3],yaw:f32,parent_source:Option<usize>,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 struct Viewer {
  surface:wgpu::Surface<'static>,device:wgpu::Device,queue:wgpu::Queue,config:wgpu::SurfaceConfiguration,
  pipeline:wgpu::RenderPipeline,cutout_pipeline:wgpu::RenderPipeline,transparent_pipeline:wgpu::RenderPipeline,vertices:wgpu::Buffer,indices:wgpu::Buffer,draws:Vec<(std::ops::Range<u32>,Arc<wgpu::BindGroup>,u8,[f32;3])>,
@@ -811,11 +811,35 @@ impl Viewer {
   }
   self.queue.submit(Some(encoder.finish()));frame.present();Ok(())
  }
+ fn refresh_instance_transforms(&self){
+  for instance in &self.scene_instances{
+   let mut matrix=model_matrix(instance.offset,instance.yaw,self.scene_pivots[instance.source]);
+   if let Some(parent)=instance.parent_source{
+    let parent_model=model_matrix(self.scene_offsets[parent],self.scene_yaws[parent],self.scene_pivots[parent]);
+    matrix=multiply(parent_model,matrix);
+   }
+   self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model:matrix}));
+  }
+ }
+ fn toggle_parent_source(&mut self){
+  let Some(id)=self.selected_instance else {println!("Select a spawned instance to attach.");return;};
+  if let Some(instance)=self.scene_instances.iter_mut().find(|v|v.id==id){
+   if instance.parent_source.is_some(){
+    instance.parent_source=None;
+    println!("Detached instance {id} from source object.");
+   }else{
+    instance.parent_source=Some(instance.source);
+    println!("Attached instance {id} to source object {}.",instance.source+1);
+   }
+  }
+  self.refresh_instance_transforms();
+ }
  fn update_scene_entity_vertices(&mut self){
   let id=self.selected_scene;
   if id>=self.scene_pivots.len(){return;}
   let model=model_matrix(self.scene_offsets[id],self.scene_yaws[id],self.scene_pivots[id]);
   self.queue.write_buffer(&self.scene_uniforms[id+1],0,bytemuck::bytes_of(&ObjectUniform{model}));
+  self.refresh_instance_transforms();
  }
  fn move_scene_entity(&mut self,axis:usize,amount:f32){
   if axis>=3{return;}
@@ -825,6 +849,7 @@ impl Viewer {
     let model=model_matrix(instance.offset,instance.yaw,self.scene_pivots[instance.source]);
     self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model}));
     println!("Moved instance {} to {:?}",id,instance.offset);
+    self.refresh_instance_transforms();
    }
    return;
   }
@@ -840,6 +865,7 @@ impl Viewer {
     let model=model_matrix(instance.offset,instance.yaw,self.scene_pivots[instance.source]);
     self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model}));
     println!("Rotated instance {} to {:.1} degrees",id,instance.yaw);
+    self.refresh_instance_transforms();
    }
    return;
   }
@@ -865,7 +891,7 @@ impl Viewer {
    label:Some("runtime scene instance bind"),layout:&self.object_layout,
    entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]
   });
-  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,uniform,bind});
+  self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,parent_source:None,uniform,bind});
   self.selected_instance=Some(id);
   println!("Spawned and selected instance {id} from scene object {}",source+1);
  }
@@ -1230,6 +1256,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
     WindowEvent::KeyboardInput{event,..}=>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
+       PhysicalKey::Code(KeyCode::KeyP)=>{viewer.toggle_parent_source();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyN)=>{viewer.spawn_selected_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_selected_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyQ)=>{viewer.rotate_scene_entity(-15.0);window.request_redraw();},
