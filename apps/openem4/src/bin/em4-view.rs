@@ -682,8 +682,9 @@ impl Viewer {
     pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
    pass.set_pipeline(&self.cutout_pipeline);
-   for (range,material,kind,_) in &self.draws {
+   for (i,(range,material,kind,_)) in self.draws.iter().enumerate() {
     if *kind!=1 {continue;}
+    pass.set_bind_group(2,&self.scene_binds[self.draw_scene_ids[i]],&[]);
     pass.set_bind_group(1,material.as_ref(),&[]);pass.draw_indexed(range.clone(),0,0..1);
    }
    let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
