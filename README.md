@@ -327,3 +327,9 @@ Mixed V3O models can have much larger geometry extents than a standalone vehicle
 ## Mixed-scene runtime rotation
 
 With multiple V3O files loaded using `--add-v3o`, select an entity with **Tab**, translate it with the arrow/Page keys, and use **Q** (rotate -15°) or **T** (rotate +15°) to rotate the selected object around its initial bounding-box centre. Positions and normals are transformed from retained initial geometry on every edit to prevent cumulative drift; only that entity's vertex-buffer range is updated. This is a preview-side vertex update, **not yet per-object shader transform matrices**. The E4P animated vehicle path is unchanged. Compilation and interactive validation are still required.
+
+## Per-entity GPU model matrix preview
+
+Mixed V3O scenes now use a dedicated object-transform uniform bind group (`@group(2)`) in the vertex shader. Each scene entity receives its own model matrix, with translation and yaw about the object's initial XZ bounding-box centre. Press Tab to select an entity, arrow/Page keys to translate, or Q/T to rotate it. Only the selected entity's 64-byte uniform is written when editing, not its whole vertex range; opaque, cutout and transparent surface passes bind the corresponding object's transform. The ground plane and E4P diagnostic light markers use the identity transform, preserving their established placement. The original vehicle E4P door and ramp vertex animations remain on their existing path.
+
+This is a **prototype GPU transform** for combined geometry, not a fully independent draw-object renderer. Current camera-distance/texture priorities and transparent sorting still refer to initial surface centres, and scaling/parenting/object lifecycle are later work. Validate on Windows with `cargo test -p openem4 --bin em4-view` and the working Astra + Barclays `--add-v3o` command; this change has not been independently compiled here.
