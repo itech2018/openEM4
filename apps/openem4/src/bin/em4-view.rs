@@ -463,8 +463,8 @@ impl Viewer {
    let (sy,cy)=self.camera.yaw.sin_cos();let (sp,cp)=self.camera.pitch.sin_cos();
    let eye=[self.camera.target[0]+self.camera.distance*cp*sy,self.camera.target[1]+self.camera.distance*sp,self.camera.target[2]+self.camera.distance*cp*cy];
    let forward=normalize(sub(self.camera.target,eye));
-   let relevance=|indices:&[usize]|->f32{indices.iter().filter_map(|&i|self.draws.get(i)).map(|d|{
-     let v=sub(d.3,eye);(0.1+0.9*dot(normalize(v),forward).max(0.0))/dot(v,v).sqrt().max(1.0)
+   let relevance=|indices:&[usize]|->f32{indices.iter().filter(|&&i|i<self.draws.len()).map(|&i|{
+     let v=sub(self.scene_draw_center(i),eye);(0.1+0.9*dot(normalize(v),forward).max(0.0))/dot(v,v).sqrt().max(1.0)
    }).fold(0.0f32,f32::max)};
    let indices=job.indices.lock().map(|v|v.clone()).unwrap_or_default();
    let candidate=relevance(&indices);
