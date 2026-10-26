@@ -139,7 +139,7 @@ struct Viewer {
  marker_pipeline:wgpu::RenderPipeline,occluded_marker_pipeline:wgpu::RenderPipeline,corona_occlusion:bool,marker_vertex:wgpu::Buffer,marker_index:wgpu::Buffer,
  light_markers:Vec<(std::ops::Range<u32>,u8,f32,f32)>,corona_anchors:Vec<([f32;3],f32,u8)>,corona_materials:Vec<wgpu::BindGroup>,
  material_layout:wgpu::BindGroupLayout,material_sampler:wgpu::Sampler,enhancements:std::sync::mpsc::Receiver<EnhancedTexture>,enhancement_done:usize,enhancement_total:usize,enhancement_gpu_budget:u64,enhancement_gpu_used:u64,baseline_texture_bytes:u64,pending_enhancements:Vec<(usize,EnhancementJob)>,enhancement_sender:std::sync::mpsc::SyncSender<EnhancementJob>,enhancement_inflight:usize,restore_jobs:Vec<(usize,EnhancementJob)>,restore_eligible_at:Vec<Instant>,restore_pending:Vec<bool>,original_materials:Vec<Arc<wgpu::BindGroup>>,resident_enhancements:Vec<ResidentEnhancement>,
- scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,next_instance_id:u64,selected_scene:usize,
+ scene_ranges:Vec<std::ops::Range<usize>>,scene_offsets:Vec<[f32;3]>,scene_yaws:Vec<f32>,scene_pivots:Vec<[f32;3]>,object_layout:wgpu::BindGroupLayout,scene_uniforms:Vec<wgpu::Buffer>,scene_binds:Vec<wgpu::BindGroup>,draw_scene_ids:Vec<usize>,scene_instances:Vec<RuntimeInstance>,next_instance_id:u64,selected_scene:usize,selected_instance:Option<u64>,
  lights:LightControls,started:Instant,doors:Vec<DoorPreview>,closed_vertices:Vec<Vertex>,door_progress:Vec<f32>,door_targets:Vec<bool>,last_door_tick:Instant,selected_door:Option<usize>,
 }
 impl Viewer {
@@ -471,7 +471,7 @@ impl Viewer {
   }).collect::<Vec<_>>();
   let original_materials=draws.iter().map(|d|d.1.clone()).collect();
   Ok(Self{surface,device,queue,config,pipeline,cutout_pipeline,transparent_pipeline,vertices:vertex_buffer,indices:index_buffer,
-   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),next_instance_id:scene_ranges.len() as u64+1,scene_ranges,selected_scene:0,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
+   draws,object_vertices,object_indices,object_draw_ranges,uniform,bind,depth,camera,initial_camera:camera,drag:None,cursor:None,debug_normals:false,ground_vertex,ground_index,ground_material,show_ground:true,marker_pipeline,occluded_marker_pipeline,corona_occlusion:false,marker_vertex,marker_index,light_markers,corona_anchors,corona_materials,material_layout,material_sampler:sampler,enhancements:enhance_rx,enhancement_done:0,enhancement_total,enhancement_gpu_budget:enhancement_budget_mib*1024*1024,enhancement_gpu_used:0,baseline_texture_bytes,pending_enhancements,enhancement_sender:job_tx,enhancement_inflight:0,restore_jobs,restore_eligible_at,restore_pending,original_materials,resident_enhancements:Vec::new(),scene_offsets:vec![[0.0;3];scene_ranges.len()],scene_yaws:vec![0.0;scene_ranges.len()],scene_pivots,object_layout,scene_uniforms,scene_binds,draw_scene_ids,scene_instances:Vec::new(),next_instance_id:scene_ranges.len() as u64+1,scene_ranges,selected_scene:0,selected_instance:None,lights:LightControls::default(),started:Instant::now(),door_progress:vec![0.0;doors.len()],door_targets:vec![false;doors.len()],doors,closed_vertices:vertices,last_door_tick:Instant::now(),selected_door:None})
  }
  fn debug_hinges(&self){
   println!("=== E4P door hinge preview (heuristic, Y-up) ===");
@@ -815,19 +815,38 @@ impl Viewer {
   self.queue.write_buffer(&self.scene_uniforms[id+1],0,bytemuck::bytes_of(&ObjectUniform{model}));
  }
  fn move_scene_entity(&mut self,axis:usize,amount:f32){
-  if self.scene_ranges.get(self.selected_scene).is_none()||axis>=3{return;}
+  if axis>=3{return;}
+  if let Some(id)=self.selected_instance{
+   if let Some(instance)=self.scene_instances.iter_mut().find(|v|v.id==id){
+    instance.offset[axis]+=amount;
+    let model=model_matrix(instance.offset,instance.yaw,self.scene_pivots[instance.source]);
+    self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model}));
+    println!("Moved instance {} to {:?}",id,instance.offset);
+   }
+   return;
+  }
+  if self.scene_ranges.get(self.selected_scene).is_none(){return;}
   self.scene_offsets[self.selected_scene][axis]+=amount;
   self.update_scene_entity_vertices();
-  println!("Scene entity {} position offset: {:?}",self.selected_scene+1,self.scene_offsets[self.selected_scene]);
+  println!("Scene entity {} offset {:?}",self.selected_scene+1,self.scene_offsets[self.selected_scene]);
  }
  fn rotate_scene_entity(&mut self,degrees:f32){
+  if let Some(id)=self.selected_instance{
+   if let Some(instance)=self.scene_instances.iter_mut().find(|v|v.id==id){
+    instance.yaw=(instance.yaw+degrees).rem_euclid(360.0);
+    let model=model_matrix(instance.offset,instance.yaw,self.scene_pivots[instance.source]);
+    self.queue.write_buffer(&instance.uniform,0,bytemuck::bytes_of(&ObjectUniform{model}));
+    println!("Rotated instance {} to {:.1} degrees",id,instance.yaw);
+   }
+   return;
+  }
   if self.scene_ranges.get(self.selected_scene).is_none(){return;}
   self.scene_yaws[self.selected_scene]=(self.scene_yaws[self.selected_scene]+degrees).rem_euclid(360.0);
   self.update_scene_entity_vertices();
-  println!("Scene entity {} yaw: {:.1}°",self.selected_scene+1,self.scene_yaws[self.selected_scene]);
+  println!("Scene entity {} yaw {:.1}",self.selected_scene+1,self.scene_yaws[self.selected_scene]);
  }
  fn spawn_selected_instance(&mut self){
-  let source=self.selected_scene;
+  let source=self.selected_instance.and_then(|id|self.scene_instances.iter().find(|i|i.id==id).map(|i|i.source)).unwrap_or(self.selected_scene);
   if source>=self.scene_ranges.len()||self.scene_instances.len()>=64{return;}
   let id=self.next_instance_id;self.next_instance_id+=1;
   let offset=[self.scene_offsets[source][0]+3.0,self.scene_offsets[source][1],self.scene_offsets[source][2]];
@@ -844,17 +863,33 @@ impl Viewer {
    entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]
   });
   self.scene_instances.push(RuntimeInstance{id,source,offset,yaw,uniform,bind});
-  println!("Spawned instance {id} from scene object {}",source+1);
+  self.selected_instance=Some(id);
+  println!("Spawned and selected instance {id} from scene object {}",source+1);
  }
- fn remove_latest_instance(&mut self){
-  if let Some(instance)=self.scene_instances.pop(){
-   println!("Removed runtime instance {}",instance.id);
+ fn remove_selected_instance(&mut self){
+  let Some(id)=self.selected_instance else {
+   println!("Loaded source objects are protected; select a spawned instance to delete.");return;
+  };
+  if let Some(index)=self.scene_instances.iter().position(|item|item.id==id){
+   self.scene_instances.remove(index);
+   self.selected_instance=None;
+   println!("Removed selected runtime instance {id}");
   }
  }
  fn select_next_scene_entity(&mut self){
-  if !self.scene_ranges.is_empty(){
-   self.selected_scene=(self.selected_scene+1)%self.scene_ranges.len();
-   println!("Selected scene entity {}",self.selected_scene+1);
+  let count=self.scene_ranges.len()+self.scene_instances.len();
+  if count==0{return;}
+  let current=if let Some(id)=self.selected_instance{
+   self.scene_instances.iter().position(|v|v.id==id).map(|i|self.scene_ranges.len()+i).unwrap_or(0)
+  }else{self.selected_scene};
+  let next=(current+1)%count;
+  if next<self.scene_ranges.len(){
+   self.selected_scene=next;self.selected_instance=None;
+   println!("Selected source entity {}",next+1);
+  }else{
+   let item=&self.scene_instances[next-self.scene_ranges.len()];
+   self.selected_scene=item.source;self.selected_instance=Some(item.id);
+   println!("Selected spawned instance {} (source {})",item.id,item.source+1);
   }
  }
  fn mouse_motion(&mut self,x:f64,y:f64){
@@ -1193,7 +1228,7 @@ fn main()->Result<(),Box<dyn std::error::Error>>{
      if event.state==ElementState::Pressed {
       match event.physical_key {
        PhysicalKey::Code(KeyCode::KeyN)=>{viewer.spawn_selected_instance();window.request_redraw();},
-       PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_latest_instance();window.request_redraw();},
+       PhysicalKey::Code(KeyCode::Delete)=>{viewer.remove_selected_instance();window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyQ)=>{viewer.rotate_scene_entity(-15.0);window.request_redraw();},
        PhysicalKey::Code(KeyCode::KeyT)=>{viewer.rotate_scene_entity(15.0);window.request_redraw();},
        PhysicalKey::Code(KeyCode::Tab)=>{viewer.select_next_scene_entity();window.request_redraw();},
